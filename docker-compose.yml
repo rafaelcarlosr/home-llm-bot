@@ -6,25 +6,39 @@ services:
     environment:
       TELEGRAM_TOKEN: ${TELEGRAM_TOKEN}
       LM_STUDIO_URL: ${LM_STUDIO_URL}
+      LLM_MODEL: ${LLM_MODEL:-qwen2.5-7b-instruct}
       HOME_ASSISTANT_URL: ${HOME_ASSISTANT_URL}
       HOME_ASSISTANT_TOKEN: ${HOME_ASSISTANT_TOKEN}
-      WHISPER_URL: ${WHISPER_URL}
+      WHISPER_URL: http://whisper:8000
       DATABASE_URL: sqlite:///app/data/bot.db
     volumes:
       - ./data:/app/data
+    networks:
+      - home
+    depends_on:
+      - whisper
+
+  whisper:
+    image: fedirz/faster-whisper-server:latest-cuda
+    environment:
+      WHISPER__MODEL: Systran/faster-whisper-large-v3-turbo
+      WHISPER__DEVICE: cuda
     ports:
-      - "8080:8080"
+      - "8000:8000"
+    volumes:
+      - whisper-models:/root/.cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
     networks:
       - home
 
-  whisper:
-    image: onerahpurwanto/openai-whisper-api:latest
-    environment:
-      DEVICE: cuda
-    ports:
-      - "9000:9000"
-    networks:
-      - home
+volumes:
+  whisper-models:
 
 networks:
   home:
