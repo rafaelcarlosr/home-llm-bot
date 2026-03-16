@@ -1,0 +1,31 @@
+version: '3.8'
+
+services:
+  bot:
+    build: .
+    environment:
+      TELEGRAM_TOKEN: ${TELEGRAM_TOKEN}
+      LM_STUDIO_URL: ${LM_STUDIO_URL}
+      HOME_ASSISTANT_URL: ${HOME_ASSISTANT_URL}
+      HOME_ASSISTANT_TOKEN: ${HOME_ASSISTANT_TOKEN}
+      WHISPER_URL: ${WHISPER_URL}
+      DATABASE_URL: sqlite:///app/data/bot.db
+    volumes:
+      - ./data:/app/data
+    ports:
+      - "8080:8080"
+    networks:
+      - home
+
+  whisper:
+    image: onerahpurwanto/openai-whisper-api:latest
+    environment:
+      DEVICE: cuda
+    ports:
+      - "9000:9000"
+    networks:
+      - home
+
+networks:
+  home:
+    driver: bridge
