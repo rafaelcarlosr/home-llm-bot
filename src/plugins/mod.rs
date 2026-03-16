@@ -19,6 +19,24 @@ pub struct FunctionDef {
     pub parameters: Value,
 }
 
+impl FunctionDef {
+    /// Convert to OpenAI-compatible tool object for the API request.
+    ///
+    /// **Rust learning note:** This `impl` block adds methods to the struct.
+    /// In Java, this would be like adding a method directly in the class.
+    /// In Rust, you can have multiple `impl` blocks for the same struct.
+    pub fn to_openai_tool(&self) -> Value {
+        serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": self.parameters
+            }
+        })
+    }
+}
+
 pub struct PluginRegistry {
     plugins: Vec<Box<dyn Plugin>>,
 }
