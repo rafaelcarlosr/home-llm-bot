@@ -3,6 +3,7 @@ pub mod lm_studio;
 pub mod whisper;
 
 use serde_json::Value;
+use serde::{Deserialize, Serialize};
 use crate::error::Result;
 
 #[async_trait::async_trait]
@@ -11,7 +12,7 @@ pub trait Plugin: Send + Sync {
     fn available_functions(&self) -> Vec<FunctionDef>;
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct FunctionDef {
     pub name: String,
     pub description: String,
