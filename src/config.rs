@@ -39,7 +39,7 @@ mod tests {
         std::env::set_var("LM_STUDIO_URL", "http://localhost:1234");
         std::env::set_var("HOME_ASSISTANT_URL", "http://localhost:8123");
         std::env::set_var("HOME_ASSISTANT_TOKEN", "test_ha_token");
-        std::env::set_var("WHISPER_URL", "http://localhost:9000");
+        std::env::set_var("WHISPER_URL", "http://localhost:8000");
         std::env::set_var("DATABASE_URL", "sqlite:test.db");
 
         let config = Config::from_env().unwrap();
