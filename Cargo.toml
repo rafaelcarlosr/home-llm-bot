@@ -3,6 +3,14 @@ name = "home-llm-bot"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+name = "home_llm_bot"
+path = "src/lib.rs"
+
+[[bin]]
+name = "home-llm-bot"
+path = "src/main.rs"
+
 [dependencies]
 tokio = { version = "1", features = ["full"] }
 teloxide = { version = "0.17", features = ["macros"] }

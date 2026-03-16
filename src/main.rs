@@ -1,5 +1,3 @@
-mod error;
-
 use tracing_subscriber;
 
 #[tokio::main]
