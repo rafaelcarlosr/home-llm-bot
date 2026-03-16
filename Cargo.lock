@@ -780,6 +780,7 @@ dependencies = [
 name = "home-llm-bot"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "async-trait",
  "chrono",
  "dotenv",
@@ -1754,6 +1755,7 @@ dependencies = [
  "js-sys",
  "log",
  "mime",
+ "mime_guess",
  "native-tls",
  "once_cell",
  "percent-encoding",
