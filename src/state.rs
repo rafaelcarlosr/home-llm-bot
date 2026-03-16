@@ -1,5 +1,19 @@
 use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};
+use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
+
+pub async fn init_db(database_url: &str) -> crate::error::Result<SqlitePool> {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(5)
+        .connect(database_url)
+        .await?;
+
+    sqlx::query(include_str!("../migrations/001_init.sql"))
+        .execute(&pool)
+        .await?;
+
+    Ok(pool)
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Message {
@@ -66,5 +80,12 @@ mod tests {
         assert_eq!(context.len(), 10);
         // Should return last 10 messages
         assert_eq!(context[0].content, "Message 15");
+    }
+
+    #[tokio::test]
+    async fn test_init_db() {
+        let pool = init_db("sqlite::memory:").await.unwrap();
+        let result: (i64,) = sqlx::query_as("SELECT 1").fetch_one(&pool).await.unwrap();
+        assert_eq!(result.0, 1);
     }
 }
