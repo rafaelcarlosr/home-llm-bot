@@ -92,7 +92,11 @@ async fn handle_message(
                 state.lock().await.mode = BotMode::Respond;
                 bot.send_message(chat_id, "Respond mode on. Voice messages will be transcribed and acted on.").await?;
             }
-            _ => handle_text(&bot, chat_id, text, &sender, &orch, &state).await?,
+            _ => {
+                if state.lock().await.mode == BotMode::Respond {
+                    handle_text(&bot, chat_id, text, &sender, &orch, &state).await?;
+                }
+            }
         }
     } else if let Some(voice) = msg.voice() {
         handle_voice(&bot, chat_id, voice.file.id.clone(), &sender, &orch, &whisper, &state).await?;
