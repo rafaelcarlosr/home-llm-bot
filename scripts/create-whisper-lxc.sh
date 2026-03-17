@@ -75,7 +75,7 @@ EOF
 # ---------------------------------------------------------------------------
 msg "Detecting and bind-mounting host NVIDIA libraries..."
 
-LIB_DIR="/usr/lib/x86_64-linux-gnu"
+LIB_DIR="/usr/lib/$(dpkg-architecture -qDEB_HOST_MULTIARCH 2>/dev/null || echo 'x86_64-linux-gnu')"
 
 # Collect all nvidia libs and specific required libs
 declare -a NVIDIA_LIBS=()
@@ -142,6 +142,8 @@ pct exec "$CTID" -- bash -c "docker run -d \
   --device /dev/nvidia0 \
   --device /dev/nvidiactl \
   --device /dev/nvidia-uvm \
+  --device /dev/nvidia-uvm-tools \
+  --device /dev/nvidia-caps \
   -p 8000:8000 \
   -v whisper-models:/root/.cache/huggingface \
   -e WHISPER__MODEL=Systran/faster-whisper-large-v3-turbo \
