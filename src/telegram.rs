@@ -152,10 +152,8 @@ async fn handle_voice(
 
     tracing::info!("Transcribed: {}", transcription);
 
-    // Show the user what was heard
-    bot.send_message(chat_id, format!("🎤 Heard: *{}*", transcription))
-        .parse_mode(teloxide::types::ParseMode::MarkdownV2)
-        .await?;
+    // Show the user what was heard (plain text — transcription may contain MarkdownV2 special chars)
+    bot.send_message(chat_id, format!("🎤 Heard: {}", transcription)).await?;
 
     // Step 4: Process the transcription as text
     handle_text(bot, chat_id, &transcription, sender, orch, state).await?;
