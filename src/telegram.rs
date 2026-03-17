@@ -5,7 +5,7 @@ use teloxide::types::{FileId, Message};
 use tokio::sync::Mutex;
 use crate::orchestrator::Orchestrator;
 use crate::plugins::whisper::WhisperProvider;
-use crate::state::ConversationState;
+use crate::state::{BotMode, ConversationState};
 use crate::error::Result;
 
 /// Start the Telegram bot dispatcher.
@@ -76,7 +76,17 @@ async fn handle_message(
         .to_string();
 
     if let Some(text) = msg.text() {
-        handle_text(&bot, chat_id, text, &sender, &orch, &state).await?;
+        match text {
+            "/transcribe" => {
+                state.lock().await.mode = BotMode::TranscribeOnly;
+                bot.send_message(chat_id, "Transcribe-only mode on. Voice messages will be echoed as text without acting on them. Send /respond to switch back.").await?;
+            }
+            "/respond" => {
+                state.lock().await.mode = BotMode::Respond;
+                bot.send_message(chat_id, "Respond mode on. Voice messages will be transcribed and acted on.").await?;
+            }
+            _ => handle_text(&bot, chat_id, text, &sender, &orch, &state).await?,
+        }
     } else if let Some(voice) = msg.voice() {
         handle_voice(&bot, chat_id, voice.file.id.clone(), &sender, &orch, &whisper, &state).await?;
     }
@@ -153,10 +163,13 @@ async fn handle_voice(
     tracing::info!("Transcribed: {}", transcription);
 
     // Show the user what was heard (plain text — transcription may contain MarkdownV2 special chars)
-    bot.send_message(chat_id, format!("🎤 Heard: {}", transcription)).await?;
+    bot.send_message(chat_id, format!("🎤 {}: {}", sender, transcription)).await?;
 
-    // Step 4: Process the transcription as text
-    handle_text(bot, chat_id, &transcription, sender, orch, state).await?;
+    // Step 4: Only process with LLM in Respond mode
+    let mode = state.lock().await.mode;
+    if mode == BotMode::Respond {
+        handle_text(bot, chat_id, &transcription, sender, orch, state).await?;
+    }
 
     Ok(())
 }

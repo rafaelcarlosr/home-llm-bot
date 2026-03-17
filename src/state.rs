@@ -32,10 +32,19 @@ pub struct Message {
 /// or `None` for in-memory-only mode (used in tests).
 /// In Java you'd use `@Nullable SqlitePool pool` + null checks.
 /// Rust forces you to handle both cases explicitly via `if let Some(pool) = &self.pool`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum BotMode {
+    /// Normal: voice messages are transcribed and sent to the LLM.
+    Respond,
+    /// Transcribe-only: voice messages are echoed as text, LLM is not called.
+    TranscribeOnly,
+}
+
 #[derive(Debug)]
 pub struct ConversationState {
     pub family_id: i64,
     pub messages: Vec<Message>,
+    pub mode: BotMode,
     pool: Option<SqlitePool>,
 }
 
@@ -45,6 +54,7 @@ impl ConversationState {
         Self {
             family_id,
             messages: Vec::new(),
+            mode: BotMode::Respond,
             pool: None,
         }
     }
@@ -54,6 +64,7 @@ impl ConversationState {
         Self {
             family_id,
             messages: Vec::new(),
+            mode: BotMode::Respond,
             pool: Some(pool),
         }
     }
