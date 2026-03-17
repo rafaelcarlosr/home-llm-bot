@@ -8,8 +8,9 @@ use home_llm_bot::{
         lm_studio::LMStudioProvider,
         whisper::WhisperProvider,
     },
-    state::{ConversationState, init_db},
+    state::init_db,
 };
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -61,20 +62,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Build the Whisper STT provider
     let whisper = Arc::new(WhisperProvider::new(config.whisper_url.clone()));
 
-    // Load existing conversation history for the family (family_id = 1)
-    // **Rust learning note on `Arc<Mutex<T>>`:**
-    // `Arc` = Atomic Reference Count (thread-safe shared ownership, like Java's GC refs).
-    // `Mutex` = mutual exclusion lock. Together, `Arc<Mutex<T>>` is the standard way
-    // to share mutable state across async tasks — equivalent to Java's
-    // `private final ReentrantLock lock = new ReentrantLock()` + synchronized access,
-    // but enforced by the type system (you cannot access state without locking).
-    let family_id: i64 = 1;
-    let history = ConversationState::load_history(&pool, family_id, 50).await?;
-    tracing::info!("Loaded {} messages from history", history.len());
-
-    let mut state = ConversationState::with_db(family_id, pool);
-    state.messages = history;
-    let shared_state = Arc::new(Mutex::new(state));
+    // Per-chat state: lazily initialised on first message from each chat.
+    // Each chat gets its own conversation history, mode, and context window.
+    // **Rust learning note:** `Arc<Mutex<HashMap<...>>>` — outer lock is held
+    // briefly just to look up the inner `Arc<Mutex<ConversationState>>` for a
+    // chat; the inner lock is then held during message processing. This lets
+    // different chats process messages concurrently.
+    let states = Arc::new(Mutex::new(HashMap::new()));
 
     // Start the Telegram bot (blocks until shutdown)
     tracing::info!("Starting Telegram bot...");
@@ -82,7 +76,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.telegram_token,
         orchestrator,
         whisper,
-        shared_state,
+        states,
+        pool,
     )
     .await?;
 
