@@ -192,7 +192,7 @@ get_lxc_ip() {
     local ip=""
 
     msg "Waiting for container ${ctid} to obtain an IP address..."
-    while (( elapsed < 30 )); do
+    while (( elapsed < 60 )); do
         ip=$(pct exec "$ctid" -- bash -c "hostname -I" 2>/dev/null | awk '{print $1}' || true)
         if [[ -n "$ip" ]]; then
             echo "$ip"

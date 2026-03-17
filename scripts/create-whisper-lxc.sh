@@ -75,9 +75,10 @@ EOF
 # ---------------------------------------------------------------------------
 msg "Detecting and bind-mounting host NVIDIA libraries..."
 
-LIB_DIR="/usr/lib/$(dpkg-architecture -qDEB_HOST_MULTIARCH 2>/dev/null || echo 'x86_64-linux-gnu')"
+MULTIARCH=$(dpkg-architecture -qDEB_HOST_MULTIARCH 2>/dev/null || echo 'x86_64-linux-gnu')
+LIB_DIR="/usr/lib/${MULTIARCH}"
 
-# Collect all nvidia libs and specific required libs
+# Collect candidate library paths (may include symlinks)
 declare -a NVIDIA_LIBS=()
 while IFS= read -r -d '' lib; do
     NVIDIA_LIBS+=("$lib")
@@ -93,13 +94,20 @@ for extra_lib in \
     fi
 done
 
+BIND_COUNT=0
 for lib in "${NVIDIA_LIBS[@]}"; do
-    # Strip leading slash for the container-side path
+    # Resolve symlinks: mount the real file at the original (expected) path inside the container.
+    # LXC bind-mount of a symlink is unreliable — use the resolved target as the source.
+    real_lib=$(readlink -f "$lib" 2>/dev/null || true)
+    if [[ -z "$real_lib" ]] || [[ ! -f "$real_lib" ]]; then
+        continue
+    fi
     container_path="${lib#/}"
-    echo "lxc.mount.entry: ${lib} ${container_path} none bind,optional,create=file" >> "$LXC_CONF"
+    echo "lxc.mount.entry: ${real_lib} ${container_path} none bind,optional,create=file" >> "$LXC_CONF"
+    (( BIND_COUNT++ ))
 done
 
-msg "Bind-mounted ${#NVIDIA_LIBS[@]} NVIDIA library/binary entries."
+msg "Bind-mounted ${BIND_COUNT} NVIDIA library/binary entries."
 
 # ---------------------------------------------------------------------------
 # Start LXC and wait for IP
@@ -119,7 +127,8 @@ pct exec "$CTID" -- bash -c "apt-get update -qq"
 pct exec "$CTID" -- bash -c "apt-get install -y ca-certificates curl gnupg"
 pct exec "$CTID" -- bash -c "install -m 0755 -d /etc/apt/keyrings"
 pct exec "$CTID" -- bash -c "curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg && chmod a+r /etc/apt/keyrings/docker.gpg"
-pct exec "$CTID" -- bash -c "echo 'deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian bookworm stable' > /etc/apt/sources.list.d/docker.list"
+DOCKER_ARCH=$(dpkg --print-architecture 2>/dev/null || echo 'amd64')
+pct exec "$CTID" -- bash -c "echo 'deb [arch=${DOCKER_ARCH} signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian bookworm stable' > /etc/apt/sources.list.d/docker.list"
 pct exec "$CTID" -- bash -c "apt-get update -qq && apt-get install -y docker-ce docker-ce-cli containerd.io"
 pct exec "$CTID" -- bash -c "systemctl enable docker && systemctl start docker"
 
