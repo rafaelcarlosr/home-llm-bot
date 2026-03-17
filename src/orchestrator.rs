@@ -3,6 +3,7 @@ use crate::plugins::{PluginRegistry, lm_studio::LMStudioProvider};
 use crate::state::ConversationState;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use tracing::{info, warn};
 
 /// A function call invoked by the LLM, with parameters to be executed.
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -79,8 +80,13 @@ impl Orchestrator {
         if !function_calls.is_empty() {
             // Execute each function call and collect results
             for call in function_calls {
-                let result = self.registry.execute(&call.name, call.parameters.clone()).await?;
-                let result_str = serde_json::to_string(&result)?;
+                info!(tool = %call.name, params = %call.parameters, "Calling tool");
+                let result = self.registry.execute(&call.name, call.parameters.clone()).await;
+                match &result {
+                    Ok(v) => info!(tool = %call.name, result = %v, "Tool result"),
+                    Err(e) => warn!(tool = %call.name, error = %e, "Tool error"),
+                }
+                let result_str = serde_json::to_string(&result?)?;
                 // Add function result to state with "tool" role (OpenAI convention)
                 state.add_message("tool", &result_str, None);
             }
