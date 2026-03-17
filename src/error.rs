@@ -17,6 +17,9 @@ pub enum BotError {
     #[error("Database error: {0}")]
     Database(#[from] sqlx::Error),
 
+    #[error("Migration error: {0}")]
+    Migration(#[from] sqlx::migrate::MigrateError),
+
     #[error("HTTP error: {0}")]
     Http(#[from] reqwest::Error),
 

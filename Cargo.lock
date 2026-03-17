@@ -789,6 +789,7 @@ dependencies = [
  "serde_json",
  "sqlx",
  "teloxide",
+ "tempfile",
  "thiserror 1.0.69",
  "tokio",
  "tokio-test",

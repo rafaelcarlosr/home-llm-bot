@@ -12,9 +12,7 @@ pub async fn init_db(database_url: &str) -> crate::error::Result<SqlitePool> {
         .connect_with(options)
         .await?;
 
-    sqlx::query(include_str!("../migrations/001_init.sql"))
-        .execute(&pool)
-        .await?;
+    sqlx::migrate!("./migrations").run(&pool).await?;
 
     Ok(pool)
 }
@@ -199,6 +197,26 @@ mod tests {
         let pool = init_db("sqlite::memory:").await.unwrap();
         let result: (i64,) = sqlx::query_as("SELECT 1").fetch_one(&pool).await.unwrap();
         assert_eq!(result.0, 1);
+    }
+
+    /// Regression: SQLx 0.7 defaults create_if_missing=false; file DBs would fail without explicit flag.
+    #[tokio::test]
+    async fn test_init_db_creates_file_if_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        let url = format!("sqlite://{}", path.display());
+        init_db(&url).await.unwrap();
+        assert!(path.exists());
+    }
+
+    /// Regression: calling init_db twice on the same DB must not fail (migration idempotency).
+    #[tokio::test]
+    async fn test_init_db_idempotent() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        let url = format!("sqlite://{}", path.display());
+        init_db(&url).await.unwrap();
+        init_db(&url).await.unwrap(); // must not error
     }
 
     #[tokio::test]
