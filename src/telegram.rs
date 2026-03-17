@@ -110,7 +110,7 @@ async fn handle_text(
 
     match response {
         Ok(reply) => {
-            bot.send_message(chat_id, reply).await?;
+            send_long_message(bot, chat_id, &reply).await?;
         }
         Err(e) => {
             tracing::error!("Orchestrator error: {}", e);
@@ -159,6 +159,38 @@ async fn handle_voice(
 
     // Step 4: Process the transcription as text
     handle_text(bot, chat_id, &transcription, sender, orch, state).await?;
+
+    Ok(())
+}
+
+const TELEGRAM_MAX_LEN: usize = 4096;
+
+/// Split a message into ≤4096-char chunks on word boundaries and send each.
+async fn send_long_message(bot: &Bot, chat_id: ChatId, text: &str) -> anyhow::Result<()> {
+    if text.len() <= TELEGRAM_MAX_LEN {
+        bot.send_message(chat_id, text).await?;
+        return Ok(());
+    }
+
+    let mut start = 0;
+    while start < text.len() {
+        let end = if start + TELEGRAM_MAX_LEN >= text.len() {
+            text.len()
+        } else {
+            // Find last whitespace before the limit to avoid cutting mid-word
+            let boundary = start + TELEGRAM_MAX_LEN;
+            text[start..boundary]
+                .rfind(|c: char| c.is_whitespace())
+                .map(|i| start + i)
+                .unwrap_or(boundary)
+        };
+
+        bot.send_message(chat_id, &text[start..end]).await?;
+        start = end + 1; // skip the whitespace we split on
+        while start < text.len() && text.as_bytes()[start] == b' ' {
+            start += 1;
+        }
+    }
 
     Ok(())
 }

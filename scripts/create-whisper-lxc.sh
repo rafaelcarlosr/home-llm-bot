@@ -154,18 +154,18 @@ pct exec "$CTID" -- bash -c "docker run -d \
   --device /dev/nvidia-uvm-tools \
   -p 8000:8000 \
   -v whisper-models:/root/.cache/huggingface \
-  -e WHISPER__MODEL=Systran/faster-whisper-large-v3-turbo \
+  -e WHISPER__MODEL=deepdml/faster-whisper-large-v3-turbo-ct2 \
   -e WHISPER__DEVICE=cuda \
   fedirz/faster-whisper-server:latest-cuda"
 
 # ---------------------------------------------------------------------------
 # Pre-download the Whisper model
 # ---------------------------------------------------------------------------
-msg "Pre-downloading Whisper model (Systran/faster-whisper-large-v3-turbo)..."
+msg "Pre-downloading Whisper model (deepdml/faster-whisper-large-v3-turbo-ct2)..."
 msg "This may take several minutes on first run..."
 
 pct exec "$CTID" -- bash -c \
-  "docker exec whisper python -c \"from faster_whisper import WhisperModel; WhisperModel('Systran/faster-whisper-large-v3-turbo', device='cuda')\"" \
+  "docker exec whisper /root/faster-whisper-server/.venv/bin/python3 -c \"from faster_whisper import WhisperModel; WhisperModel('deepdml/faster-whisper-large-v3-turbo-ct2', device='cuda')\"" \
   || warn "Model pre-download failed — model will download on first request."
 
 # ---------------------------------------------------------------------------
@@ -176,7 +176,7 @@ printf "\n"
 msg "CT ID:      ${CTID}"
 msg "IP Address: ${LXC_IP}"
 msg "Port:       8000"
-msg "Model:      Systran/faster-whisper-large-v3-turbo"
+msg "Model:      deepdml/faster-whisper-large-v3-turbo-ct2"
 printf "\n"
 msg "Test command:"
 printf "  curl -X POST http://%s:8000/v1/audio/transcriptions \\\\\n" "$LXC_IP"
