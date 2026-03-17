@@ -61,7 +61,7 @@ next_ctid() {
 # ---------------------------------------------------------------------------
 # Template management
 # ---------------------------------------------------------------------------
-readonly TEMPLATE_NAME="debian-12-standard_12.7-1_amd64.tar.zst"
+readonly TEMPLATE_NAME="debian-12-standard_12.12-1_amd64.tar.zst"
 
 ensure_template() {
     local storage="${1:-local}"
