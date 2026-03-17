@@ -61,17 +61,17 @@ next_ctid() {
 # ---------------------------------------------------------------------------
 # Template management
 # ---------------------------------------------------------------------------
-readonly TEMPLATE_NAME="debian-12-standard_12.12-1_amd64.tar.zst"
+readonly TEMPLATE_NAME="debian-12-standard_12.7-1_amd64.tar.zst"
+# Templates must live on directory-based storage (local), not LVM-thin or ZFS pools
+readonly TEMPLATE_STORAGE="local"
 
 ensure_template() {
-    local storage="${1:-local}"
-
-    if pveam list "$storage" 2>/dev/null | grep -q "$TEMPLATE_NAME"; then
-        msg "Debian 12 template already cached."
+    if pveam list "$TEMPLATE_STORAGE" 2>/dev/null | grep -q "$TEMPLATE_NAME"; then
+        msg "Debian 12 template already cached on ${TEMPLATE_STORAGE}."
     else
-        msg "Downloading Debian 12 template..."
+        msg "Downloading Debian 12 template to ${TEMPLATE_STORAGE}..."
         pveam update
-        pveam download "$storage" "$TEMPLATE_NAME"
+        pveam download "$TEMPLATE_STORAGE" "$TEMPLATE_NAME"
     fi
 }
 
@@ -155,7 +155,7 @@ create_lxc() {
     local features="${9:-}"
 
     local template_path
-    template_path="${storage}:vztmpl/${TEMPLATE_NAME}"
+    template_path="${TEMPLATE_STORAGE}:vztmpl/${TEMPLATE_NAME}"
 
     local pct_args=(
         "$ctid" "$template_path"
