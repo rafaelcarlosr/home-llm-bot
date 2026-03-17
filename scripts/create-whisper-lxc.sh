@@ -152,7 +152,6 @@ pct exec "$CTID" -- bash -c "docker run -d \
   --device /dev/nvidiactl \
   --device /dev/nvidia-uvm \
   --device /dev/nvidia-uvm-tools \
-  --device /dev/nvidia-caps \
   -p 8000:8000 \
   -v whisper-models:/root/.cache/huggingface \
   -e WHISPER__MODEL=Systran/faster-whisper-large-v3-turbo \
