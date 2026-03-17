@@ -104,7 +104,7 @@ for lib in "${NVIDIA_LIBS[@]}"; do
     fi
     container_path="${lib#/}"
     echo "lxc.mount.entry: ${real_lib} ${container_path} none bind,optional,create=file" >> "$LXC_CONF"
-    (( BIND_COUNT++ ))
+    BIND_COUNT=$(( BIND_COUNT + 1 ))
 done
 
 msg "Bind-mounted ${BIND_COUNT} NVIDIA library/binary entries."
