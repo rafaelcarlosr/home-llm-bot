@@ -63,8 +63,9 @@ pct exec "$CTID" -- bash -c "apt-get update -qq && apt-get install -y build-esse
 # ---------------------------------------------------------------------------
 # Create bot user and directories
 # ---------------------------------------------------------------------------
-msg "Creating bot user and directories..."
-pct exec "$CTID" -- bash -c "useradd -r -m -s /bin/bash bot && mkdir -p /opt/home-llm-bot/data && chown -R bot:bot /opt/home-llm-bot"
+msg "Creating bot user and base directory..."
+# /opt/home-llm-bot must be empty for git clone to succeed — data/ is created after the build
+pct exec "$CTID" -- bash -c "useradd -r -m -s /bin/bash bot && mkdir -p /opt/home-llm-bot && chown bot:bot /opt/home-llm-bot"
 
 # ---------------------------------------------------------------------------
 # Install Rust toolchain via rustup
@@ -81,19 +82,26 @@ pct exec "$CTID" -- bash -c "su - bot -c 'cd /opt/home-llm-bot && /home/bot/.car
 
 msg "Build complete."
 
+# Create data directory after clone (must not exist before git clone — non-empty dir would fail)
+pct exec "$CTID" -- bash -c "mkdir -p /opt/home-llm-bot/data && chown -R bot:bot /opt/home-llm-bot"
+
 # ---------------------------------------------------------------------------
 # Write .env file
 # ---------------------------------------------------------------------------
 msg "Writing .env configuration file..."
-pct exec "$CTID" -- bash -c "printf 'TELEGRAM_TOKEN=%s\nLM_STUDIO_URL=%s\nLLM_MODEL=%s\nHOME_ASSISTANT_URL=%s\nHOME_ASSISTANT_TOKEN=%s\nWHISPER_URL=%s\nDATABASE_URL=%s\n' \
-  '${TELEGRAM_TOKEN}' \
-  '${LM_STUDIO_URL}' \
-  '${LLM_MODEL}' \
-  '${HOME_ASSISTANT_URL}' \
-  '${HOME_ASSISTANT_TOKEN}' \
-  '${WHISPER_URL}' \
-  '${DATABASE_URL}' \
-  > /opt/home-llm-bot/.env && chmod 600 /opt/home-llm-bot/.env && chown bot:bot /opt/home-llm-bot/.env"
+# Use pct push to avoid shell injection — variables may contain single quotes or special chars
+TMP_ENV=$(mktemp)
+cat > "$TMP_ENV" << EOF
+TELEGRAM_TOKEN=${TELEGRAM_TOKEN}
+LM_STUDIO_URL=${LM_STUDIO_URL}
+LLM_MODEL=${LLM_MODEL}
+HOME_ASSISTANT_URL=${HOME_ASSISTANT_URL}
+HOME_ASSISTANT_TOKEN=${HOME_ASSISTANT_TOKEN}
+WHISPER_URL=${WHISPER_URL}
+DATABASE_URL=${DATABASE_URL}
+EOF
+pct push "$CTID" "$TMP_ENV" /opt/home-llm-bot/.env --perms 600 --user bot --group bot
+rm -f "$TMP_ENV"
 
 # ---------------------------------------------------------------------------
 # Write systemd service file
