@@ -1,5 +1,6 @@
-#!/usr/bin/env bash
-set -euo pipefail
+# common.sh — Shared helpers for Proxmox LXC creation scripts
+# Source this file, do not execute directly.
+# Usage: source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
 # ---------------------------------------------------------------------------
 # Color codes
@@ -46,26 +47,31 @@ check_proxmox() {
 # ---------------------------------------------------------------------------
 next_ctid() {
     local id=100
-    while pct status "$id" &>/dev/null; do
-        id=$(( id + 1 ))
+    while (( id < 1000 )); do
+        if ! pct status "$id" &>/dev/null; then
+            echo "$id"
+            return 0
+        fi
+        (( id++ ))
     done
-    echo "$id"
+    err "No free CT ID found in range 100-999"
+    return 1
 }
 
 # ---------------------------------------------------------------------------
 # Template management
 # ---------------------------------------------------------------------------
-TEMPLATE_NAME="debian-12-standard_12.7-1_amd64.tar.zst"
+readonly TEMPLATE_NAME="debian-12-standard_12.7-1_amd64.tar.zst"
 
 ensure_template() {
-    local storage="$1"
-    if ! pvesm path "${storage}:vztmpl/${TEMPLATE_NAME}" &>/dev/null; then
-        msg "Template not found. Updating appliance list..."
-        pveam update
-        msg "Downloading template ${TEMPLATE_NAME}..."
-        pveam download "$storage" "$TEMPLATE_NAME"
+    local storage="${1:-local}"
+
+    if pveam list "$storage" 2>/dev/null | grep -q "$TEMPLATE_NAME"; then
+        msg "Debian 12 template already cached."
     else
-        msg "Template ${TEMPLATE_NAME} already present on ${storage}."
+        msg "Downloading Debian 12 template..."
+        pveam update
+        pveam download "$storage" "$TEMPLATE_NAME"
     fi
 }
 
@@ -94,7 +100,8 @@ prompt() {
         fi
     done
 
-    eval "${var_name}=\"\${value}\""
+    local -n _prompt_ref="$var_name"
+    _prompt_ref="$value"
 }
 
 prompt_ip() {
@@ -113,7 +120,8 @@ prompt_ip() {
         fi
         case "$choice" in
             1)
-                eval "${var_name}=\"ip=dhcp\""
+                local -n _prompt_ip_ref="$var_name"
+                _prompt_ip_ref="ip=dhcp"
                 return
                 ;;
             2)
@@ -121,7 +129,8 @@ prompt_ip() {
                 local gw=""
                 prompt cidr "Enter IP address with CIDR (e.g. 192.168.1.10/24)" ""
                 prompt gw   "Enter gateway (e.g. 192.168.1.1)" ""
-                eval "${var_name}=\"ip=${cidr},gw=${gw}\""
+                local -n _prompt_ip_ref="$var_name"
+                _prompt_ip_ref="ip=${cidr},gw=${gw}"
                 return
                 ;;
             *)
