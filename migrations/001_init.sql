@@ -14,5 +14,5 @@ CREATE TABLE IF NOT EXISTS messages (
     FOREIGN KEY (conversation_id) REFERENCES conversations(id)
 );
 
-CREATE INDEX idx_conversation_family ON conversations(family_id);
-CREATE INDEX idx_message_conversation ON messages(conversation_id);
+CREATE INDEX IF NOT EXISTS idx_conversation_family ON conversations(family_id);
+CREATE INDEX IF NOT EXISTS idx_message_conversation ON messages(conversation_id);
