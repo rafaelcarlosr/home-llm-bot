@@ -110,6 +110,14 @@ done
 msg "Bind-mounted ${BIND_COUNT} NVIDIA library/binary entries."
 
 # ---------------------------------------------------------------------------
+# Append Docker GPU lib directory to LXC conf
+# ---------------------------------------------------------------------------
+# Docker containers expect NVIDIA libs at /usr/local/nvidia/lib64.
+# We create /opt/nvidia-libs inside the LXC (after start) and mount
+# it there. This avoids the segfault caused by bind-mounting the entire
+# system lib dir into the Docker container.
+
+# ---------------------------------------------------------------------------
 # Start LXC and wait for IP
 # ---------------------------------------------------------------------------
 msg "Starting LXC container ${CTID}..."
@@ -135,6 +143,24 @@ pct exec "$CTID" -- bash -c "systemctl enable docker && systemctl start docker"
 msg "Docker CE installed successfully."
 
 # ---------------------------------------------------------------------------
+# Build /opt/nvidia-libs: targeted NVIDIA driver libs for Docker GPU access
+# ---------------------------------------------------------------------------
+# Docker containers expect NVIDIA driver libs at /usr/local/nvidia/lib64
+# (set via LD_LIBRARY_PATH in the image). We create a small directory with
+# only the needed driver libs (NOT the full system lib dir, which causes
+# segfaults by overwriting the container's own shared libraries).
+msg "Building /opt/nvidia-libs for Docker GPU passthrough..."
+pct exec "$CTID" -- bash -c "
+  mkdir -p /opt/nvidia-libs
+  LIB_DIR='/usr/lib/${MULTIARCH}'
+  cp -L \"\${LIB_DIR}/libcuda.so.1\" /opt/nvidia-libs/ 2>/dev/null || true
+  cp -L \"\${LIB_DIR}/libnvidia-ml.so.1\" /opt/nvidia-libs/ 2>/dev/null || true
+  cp -L \$(ls \"\${LIB_DIR}/libnvidia-ptxjitcompiler.so\"* 2>/dev/null | head -1) /opt/nvidia-libs/ 2>/dev/null || true
+  cp -L \$(ls \"\${LIB_DIR}/libnvidia-nvvm.so\"* 2>/dev/null | head -1) /opt/nvidia-libs/ 2>/dev/null || true
+  echo \"Libs in /opt/nvidia-libs:\"; ls /opt/nvidia-libs/
+"
+
+# ---------------------------------------------------------------------------
 # Verify nvidia-smi inside the LXC
 # ---------------------------------------------------------------------------
 msg "Verifying nvidia-smi inside container..."
@@ -154,6 +180,7 @@ pct exec "$CTID" -- bash -c "docker run -d \
   --device /dev/nvidia-uvm-tools \
   -p 8000:8000 \
   -v whisper-models:/root/.cache/huggingface \
+  -v /opt/nvidia-libs:/usr/local/nvidia/lib64 \
   -e WHISPER__MODEL=deepdml/faster-whisper-large-v3-turbo-ct2 \
   -e WHISPER__DEVICE=cuda \
   fedirz/faster-whisper-server:latest-cuda"
