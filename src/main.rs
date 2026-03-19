@@ -54,16 +54,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     registry.register(Box::new(mcp));
     tracing::info!("Registered {} MCP functions from Home Assistant", registry.get_all_functions().len());
 
-    // LLM model name — defaults to a sensible local model if not set
-    let model = std::env::var("LLM_MODEL")
-        .unwrap_or_else(|_| "qwen2.5-7b-instruct".to_string());
-
     // Build the orchestrator (owns the LLM provider and plugin registry)
-    let lm_provider = LMStudioProvider::new(config.lm_studio_url.clone());
+    let lm_provider = LMStudioProvider::new(config.lm_studio_url.clone(), config.llm_temperature);
     let orchestrator = Arc::new(Orchestrator::new(
         Box::new(lm_provider),
         registry,
-        model,
+        config.llm_model.clone(),
         config.system_prompt_extra.clone(),
     ));
 

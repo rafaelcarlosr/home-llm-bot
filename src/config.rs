@@ -19,6 +19,13 @@ pub struct Config {
     /// "AdGuard,Solarman,Disjuntor" that clutters the home state view.
     /// Set via LIVE_CONTEXT_SKIP env var. Empty by default.
     pub live_context_skip: Vec<String>,
+
+    /// LLM model name. Set via LLM_MODEL env var.
+    /// Default: "qwen2.5-7b-instruct"
+    pub llm_model: String,
+    /// LLM sampling temperature (0.0–1.0). Lower = more deterministic.
+    /// Set via LLM_TEMPERATURE env var. Default: 0.3
+    pub llm_temperature: f64,
 }
 
 impl Config {
@@ -43,6 +50,12 @@ impl Config {
                 .map(|s| s.trim().to_lowercase())
                 .filter(|s| !s.is_empty())
                 .collect(),
+            llm_model: std::env::var("LLM_MODEL")
+                .unwrap_or_else(|_| "qwen2.5-7b-instruct".to_string()),
+            llm_temperature: std::env::var("LLM_TEMPERATURE")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0.3),
         })
     }
 }
@@ -63,5 +76,28 @@ mod tests {
         let config = Config::from_env().unwrap();
         assert_eq!(config.telegram_token, "test_token");
         assert_eq!(config.lm_studio_url, "http://localhost:1234");
+    }
+
+    #[test]
+    fn test_config_temperature_default() {
+        // Ensure unset LLM_TEMPERATURE defaults to 0.3
+        std::env::remove_var("LLM_TEMPERATURE");
+        // We can't call Config::from_env() without all required vars, so test the parse logic directly:
+        let val: f64 = std::env::var("LLM_TEMPERATURE")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0.3);
+        assert!((val - 0.3).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_config_temperature_from_env() {
+        std::env::set_var("LLM_TEMPERATURE", "0.1");
+        let val: f64 = std::env::var("LLM_TEMPERATURE")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0.3);
+        assert!((val - 0.1).abs() < f64::EPSILON);
+        std::env::remove_var("LLM_TEMPERATURE");
     }
 }

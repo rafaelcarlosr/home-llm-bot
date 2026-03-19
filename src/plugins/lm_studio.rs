@@ -11,13 +11,15 @@ use reqwest::Client;
 pub struct LMStudioProvider {
     url: String,
     client: Client,
+    temperature: f64,
 }
 
 impl LMStudioProvider {
-    pub fn new(url: String) -> Self {
+    pub fn new(url: String, temperature: f64) -> Self {
         Self {
             url,
             client: Client::new(),
+            temperature,
         }
     }
 }
@@ -35,7 +37,7 @@ impl LlmProvider for LMStudioProvider {
         let mut body = json!({
             "model": model,
             "messages": messages,
-            "temperature": 0.7,
+            "temperature": self.temperature,
         });
 
         if !tools.is_empty() {
@@ -88,7 +90,7 @@ mod tests {
     #[ignore] // Requires real LM Studio instance
     async fn test_real_lm_studio_call() {
         // Integration test: uncomment to test against real LM Studio
-        // let provider = LMStudioProvider::new("http://localhost:1234".to_string());
+        // let provider = LMStudioProvider::new("http://localhost:1234".to_string(), 0.3);
         // let messages = vec![json!({"role": "user", "content": "Hello"})];
         // let result = provider.call_llm(messages, vec![], "qwen2.5-7b").await;
         // assert!(result.is_ok());
