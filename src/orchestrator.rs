@@ -164,9 +164,9 @@ fn build_system_prompt(entity_hints: Option<&str>) -> String {
         \n- Keep responses short and conversational.",
     );
 
-    if let Some(hints) = entity_hints {
-        prompt.push_str("\n\nExtra context about this home:\n");
-        prompt.push_str(hints);
+    if let Some(extra) = entity_hints {
+        prompt.push_str("\n\n");
+        prompt.push_str(extra);
     }
 
     prompt

@@ -8,6 +8,17 @@ pub struct Config {
     pub home_assistant_token: String,
     pub whisper_url: String,
     pub database_url: String,
+
+    /// Optional system prompt suffix. Use to add home-specific context for the LLM.
+    /// Set via SYSTEM_PROMPT_EXTRA env var.
+    pub system_prompt_extra: Option<String>,
+
+    /// Comma-separated list of keywords to filter out of GetLiveContext results.
+    /// Entries whose friendly name contains any of these substrings (case-insensitive)
+    /// will be hidden from the LLM. Useful for removing integration noise like
+    /// "AdGuard,Solarman,Disjuntor" that clutters the home state view.
+    /// Set via LIVE_CONTEXT_SKIP env var. Empty by default.
+    pub live_context_skip: Vec<String>,
 }
 
 impl Config {
@@ -25,6 +36,13 @@ impl Config {
                 .map_err(|_| BotError::Config("WHISPER_URL not set".to_string()))?,
             database_url: std::env::var("DATABASE_URL")
                 .map_err(|_| BotError::Config("DATABASE_URL not set".to_string()))?,
+            system_prompt_extra: std::env::var("SYSTEM_PROMPT_EXTRA").ok(),
+            live_context_skip: std::env::var("LIVE_CONTEXT_SKIP")
+                .unwrap_or_default()
+                .split(',')
+                .map(|s| s.trim().to_lowercase())
+                .filter(|s| !s.is_empty())
+                .collect(),
         })
     }
 }

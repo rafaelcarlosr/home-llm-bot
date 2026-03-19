@@ -26,12 +26,15 @@ pub struct McpPlugin {
     /// Monotonically increasing JSON-RPC request id.
     /// AtomicU64 gives us interior mutability without a Mutex (safe across async tasks).
     request_id: AtomicU64,
+    /// Lowercase keywords — entries whose friendly name contains any of these are
+    /// filtered out of GetLiveContext results. Configured via LIVE_CONTEXT_SKIP env var.
+    live_context_skip: Vec<String>,
 }
 
 impl McpPlugin {
     /// Initialise the plugin by fetching the tool list from the HA MCP server.
     /// Returns an error if the server is unreachable or returns no tools.
-    pub async fn init(ha_url: String, token: String) -> Result<Self> {
+    pub async fn init(ha_url: String, token: String, live_context_skip: Vec<String>) -> Result<Self> {
         let client = Client::new();
         let url = format!("{}/api/mcp", ha_url);
 
@@ -75,6 +78,7 @@ impl McpPlugin {
             client,
             tools,
             request_id: AtomicU64::new(2),
+            live_context_skip,
         })
     }
 }
@@ -119,7 +123,7 @@ impl Plugin for McpPlugin {
         {
             // For GetLiveContext, filter the large result to only useful entries
             let processed = if function_name == "GetLiveContext" {
-                filter_live_context(text)
+                filter_live_context(text, &self.live_context_skip)
             } else {
                 text.to_string()
             };
@@ -138,17 +142,15 @@ impl Plugin for McpPlugin {
 
 /// Filter the GetLiveContext YAML to remove noise before sending to the LLM.
 ///
-/// HA's GetLiveContext returns ~10KB with 90+ entries (AdGuard switches, Solarman
-/// sensors, unavailable devices, etc.). This drops irrelevant entries so the LLM
-/// can answer "is the AC on?" without getting lost in a wall of unrelated data.
+/// HA's GetLiveContext returns ~10KB with 90+ entries. This always drops entries
+/// with `unavailable` or `unknown` state. Additionally, entries whose friendly name
+/// contains any keyword from `skip` (case-insensitive) are removed — this lets
+/// each deployment hide integration noise (e.g. "AdGuard", "Solarman") via the
+/// `LIVE_CONTEXT_SKIP` env var without code changes.
 ///
 /// The input text from MCP is `{"success": true, "result": "Live Context: ...YAML..."}`.
 /// We extract the YAML, filter it, and rewrap it.
-fn filter_live_context(raw: &str) -> String {
-    const SKIP_NAMES: &[&str] = &[
-        "adguard", "disjuntor", "solarman", "xiaomi", "pm10", "pm2.5",
-        "smartthinq", "icloud", "truenas", "plex",
-    ];
+fn filter_live_context(raw: &str, skip: &[String]) -> String {
 
     // The MCP text content is JSON: {"success": true, "result": "Live Context: ...\n- names:..."}
     // Extract the inner YAML from the "result" field
@@ -192,8 +194,8 @@ fn filter_live_context(raw: &str) -> String {
             {
                 return false;
             }
-            // Drop noisy infrastructure devices by name keyword
-            if SKIP_NAMES.iter().any(|skip| lower.contains(skip)) {
+            // Drop entries matching any user-configured skip keyword
+            if skip.iter().any(|s| lower.contains(s.as_str())) {
                 return false;
             }
             true
