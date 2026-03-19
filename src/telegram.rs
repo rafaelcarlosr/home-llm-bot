@@ -100,6 +100,17 @@ async fn handle_message(
         }
     } else if let Some(voice) = msg.voice() {
         handle_voice(&bot, chat_id, voice.file.id.clone(), &sender, &orch, &whisper, &state).await?;
+    } else if let Some(audio) = msg.audio() {
+        // Audio files sent as music (e.g. m4a, mp3)
+        handle_voice(&bot, chat_id, audio.file.id.clone(), &sender, &orch, &whisper, &state).await?;
+    } else if let Some(doc) = msg.document() {
+        // File attachments — only transcribe if the MIME type is audio/*
+        let is_audio = doc.mime_type.as_ref()
+            .map(|m| m.type_().as_str() == "audio")
+            .unwrap_or(false);
+        if is_audio {
+            handle_voice(&bot, chat_id, doc.file.id.clone(), &sender, &orch, &whisper, &state).await?;
+        }
     }
 
     Ok(())

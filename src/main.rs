@@ -57,7 +57,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Build the orchestrator (owns the LLM provider and plugin registry)
     let lm_provider = LMStudioProvider::new(config.lm_studio_url.clone());
-    let orchestrator = Arc::new(Orchestrator::new(lm_provider, registry, model));
+    let orchestrator = Arc::new(Orchestrator::new(Box::new(lm_provider), registry, model));
 
     // Build the Whisper STT provider
     let whisper = Arc::new(WhisperProvider::new(config.whisper_url.clone()));

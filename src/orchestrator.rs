@@ -1,31 +1,41 @@
 use crate::error::{BotError, Result};
-use crate::plugins::{PluginRegistry, lm_studio::LMStudioProvider};
+use crate::plugins::{LlmProvider, PluginRegistry};
 use crate::state::ConversationState;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tracing::{info, warn};
 
-/// A function call invoked by the LLM, with parameters to be executed.
+/// Maximum number of tool-call round trips before forcing a text response.
+/// Prevents infinite loops if the LLM keeps requesting tools.
+const MAX_TOOL_ITERATIONS: usize = 5;
+
+/// A function call requested by the LLM, with an id to correlate the result.
+///
+/// **Rust learning note:** The `id` field comes from the OpenAI `tool_call` object.
+/// When we send back the tool result, we must include the matching `tool_call_id`
+/// so the LLM knows which result corresponds to which call.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct FunctionCall {
+    pub id: String,
     pub name: String,
     pub parameters: Value,
 }
 
-/// **Rust learning note on ownership:**
-/// The `Orchestrator` *owns* the `provider` and `registry`.
-/// In Java, we'd inject these as constructor args and store references.
-/// In Rust, we own them directly. This is enforced at compile time.
-/// When `Orchestrator` is dropped, its owned fields are dropped too.
+/// The orchestrator connects the LLM provider with the plugin registry.
+///
+/// **Rust learning note on trait objects (`Box<dyn LlmProvider>`):**
+/// Instead of owning a concrete `LMStudioProvider`, we hold a `Box<dyn LlmProvider>`.
+/// This is like Java's `LlmProvider provider` interface field — we can swap in any
+/// implementation (real HTTP provider, or a mock for tests) without changing Orchestrator.
 pub struct Orchestrator {
-    provider: LMStudioProvider,
+    provider: Box<dyn LlmProvider>,
     registry: PluginRegistry,
     model: String,
 }
 
 impl Orchestrator {
     pub fn new(
-        provider: LMStudioProvider,
+        provider: Box<dyn LlmProvider>,
         registry: PluginRegistry,
         model: String,
     ) -> Self {
@@ -36,92 +46,107 @@ impl Orchestrator {
         }
     }
 
-    /// Process a user message and orchestrate function calls.
+    /// Process a user message using an agentic loop that supports chained tool calls.
     ///
-    /// **Two-turn function calling loop:**
-    /// 1. Add user message to state
-    /// 2. Call LM Studio with available functions
-    /// 3. If LM returns function calls → execute each → add results to state
-    /// 4. Call LM Studio again with results for a natural language reply
-    /// 5. Return final reply to user
+    /// **Flow:**
+    /// 1. Add user message to persistent state
+    /// 2. Build a working `messages` vec (OpenAI format) from the context window
+    /// 3. Build the tools array from the plugin registry
+    /// 4. **Loop** (up to `MAX_TOOL_ITERATIONS`):
+    ///    a. Call the LLM with messages + tools
+    ///    b. If the LLM returns `tool_calls`: push the assistant message (with tool_calls)
+    ///       into the working vec, execute each tool, push tool-role results with matching
+    ///       `tool_call_id` -> continue loop
+    ///    c. If no `tool_calls`: extract text, persist to state, return
+    /// 5. If the loop is exhausted: make one final call with empty tools to force a text reply
     ///
-    /// **Rust learning note on `&mut`:**
-    /// The `state` parameter is `&mut ConversationState`, meaning we have
-    /// exclusive mutable access. The compiler ensures no one else can read/write
-    /// the state simultaneously. Similar to synchronized access in Java, but
-    /// enforced at compile time with no runtime lock overhead.
+    /// **Why a working vec?** During the loop we accumulate assistant+tool messages that
+    /// the LLM needs to see on the next iteration. We also persist them to state for history.
     pub async fn process_message(
         &self,
         user_message: &str,
         state: &mut ConversationState,
     ) -> Result<String> {
-        // Step 1: Add user message to history
+        // Step 1: Add user message to persistent state
         state.add_message("user", user_message, None);
 
-        // Step 2: Build OpenAI messages array from context window
+        // Step 2: Build working messages from context window
         let context = state.get_context_window(20);
-        let messages: Vec<Value> = context
+        let mut messages: Vec<Value> = context
             .iter()
             .map(|m| json!({"role": m.role, "content": m.content}))
             .collect();
 
-        // Step 3: Call LM Studio with available functions
+        // Step 3: Build tools array from registry
         let tools: Vec<Value> = self.registry
             .get_all_functions()
             .into_iter()
             .map(|f| f.to_openai_tool())
             .collect();
 
-        let llm_response = self.provider.call_llm(messages.clone(), tools, &self.model).await?;
+        // Step 4: Agentic loop
+        for iteration in 0..MAX_TOOL_ITERATIONS {
+            let llm_response = self.provider
+                .call_llm(messages.clone(), tools.clone(), &self.model)
+                .await?;
 
-        // Step 4: Parse and execute any function calls
-        let function_calls = parse_function_calls(&llm_response)?;
+            let function_calls = parse_function_calls(&llm_response)?;
 
-        if !function_calls.is_empty() {
-            // Execute each function call and collect results
-            for call in function_calls {
-                info!(tool = %call.name, params = %call.parameters, "Calling tool");
-                let result = self.registry.execute(&call.name, call.parameters.clone()).await;
-                match &result {
-                    Ok(v) => info!(tool = %call.name, result = %v, "Tool result"),
-                    Err(e) => warn!(tool = %call.name, error = %e, "Tool error"),
-                }
-                let result_str = serde_json::to_string(&result?)?;
-                // Add function result to state with "tool" role (OpenAI convention)
-                state.add_message("tool", &result_str, None);
+            if function_calls.is_empty() {
+                // No tool calls — the LLM produced a final text response
+                let response = extract_text_response(&llm_response);
+                state.add_message("assistant", &response, None);
+                return Ok(response);
             }
 
-            // Step 5: Call LM Studio again with tool results for final reply
-            let updated_messages: Vec<Value> = state
-                .get_context_window(20)
-                .iter()
-                .map(|m| json!({"role": m.role, "content": m.content}))
-                .collect();
-            let final_response = self.provider.call_llm(updated_messages, vec![], &self.model).await?;
-            let response = extract_text_response(&final_response);
-            state.add_message("assistant", &response, None);
-            Ok(response)
-        } else {
-            // No function calls — extract text response directly
-            let response = extract_text_response(&llm_response);
-            state.add_message("assistant", &response, None);
-            Ok(response)
+            info!(iteration, num_calls = function_calls.len(), "LLM requested tool calls");
+
+            // Push the full assistant message (with tool_calls) into working messages.
+            // The OpenAI API requires this so the LLM can see what it previously requested.
+            let assistant_msg = llm_response["choices"][0]["message"].clone();
+            messages.push(assistant_msg);
+
+            // Execute each tool call and push results
+            for call in &function_calls {
+                info!(tool = %call.name, params = %call.parameters, "Calling tool");
+                let result = self.registry.execute(&call.name, call.parameters.clone()).await;
+
+                let result_str = match &result {
+                    Ok(v) => {
+                        info!(tool = %call.name, result = %v, "Tool result");
+                        serde_json::to_string(v)?
+                    }
+                    Err(e) => {
+                        warn!(tool = %call.name, error = %e, "Tool error");
+                        format!("Error: {}", e)
+                    }
+                };
+
+                // Add tool result to working messages with the matching tool_call_id
+                messages.push(json!({
+                    "role": "tool",
+                    "tool_call_id": call.id,
+                    "content": result_str,
+                }));
+
+                // Also persist to state for conversation history
+                state.add_message("tool", &result_str, None);
+            }
         }
+
+        // Step 5: Loop exhausted — force a text response by calling without tools
+        warn!("Agentic loop reached MAX_TOOL_ITERATIONS ({}), forcing text response", MAX_TOOL_ITERATIONS);
+        let final_response = self.provider
+            .call_llm(messages, vec![], &self.model)
+            .await?;
+        let response = extract_text_response(&final_response);
+        state.add_message("assistant", &response, None);
+        Ok(response)
     }
 }
 
 /// Parse LM Studio's function call response in OpenAI format.
-///
-/// **Rust learning note on `Option` chaining:**
-/// The `response["choices"][0]["message"]["tool_calls"]` chain uses
-/// implicit `Option` operations. If any step is None, we return `Ok(vec![])`.
-/// In Java we'd write:
-/// ```java
-/// if (response.has("choices") && response.getJSONArray("choices").length() > 0) {
-///     var calls = response.getJSONArray("choices").getJSONObject(0)...
-/// }
-/// ```
-/// Rust's `Option` makes the pattern explicit and chainable.
+/// Now also extracts the `id` field from each tool_call for proper correlation.
 fn parse_function_calls(response: &Value) -> Result<Vec<FunctionCall>> {
     let tool_calls = response["choices"][0]["message"]["tool_calls"]
         .as_array();
@@ -130,9 +155,19 @@ fn parse_function_calls(response: &Value) -> Result<Vec<FunctionCall>> {
         return Ok(vec![]);
     };
 
+    // Filter out empty arrays (some LLMs return `"tool_calls": []` with text)
+    if calls.is_empty() {
+        return Ok(vec![]);
+    }
+
     calls
         .iter()
         .map(|tc| {
+            let id = tc["id"]
+                .as_str()
+                .unwrap_or("unknown")
+                .to_string();
+
             let name = tc["function"]["name"]
                 .as_str()
                 .ok_or_else(|| BotError::LMStudio("Missing function name in tool_call".into()))?
@@ -144,7 +179,7 @@ fn parse_function_calls(response: &Value) -> Result<Vec<FunctionCall>> {
 
             let parameters: Value = serde_json::from_str(args_str)?;
 
-            Ok(FunctionCall { name, parameters })
+            Ok(FunctionCall { id, name, parameters })
         })
         .collect()
 }
@@ -160,12 +195,130 @@ fn extract_text_response(response: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::plugins::{LlmProvider, Plugin, FunctionDef, PluginRegistry};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    // ---- Mock LLM Provider ----
+
+    /// A mock LLM provider that returns pre-configured responses in sequence.
+    /// Each call to `call_llm` returns the next response from the list.
+    ///
+    /// **Rust learning note on `AtomicUsize`:**
+    /// We need interior mutability because `call_llm` takes `&self` (shared ref).
+    /// `AtomicUsize` lets us increment a counter without `&mut self`.
+    /// In Java this would be `AtomicInteger`.
+    struct MockLlmProvider {
+        responses: Vec<Value>,
+        call_count: AtomicUsize,
+    }
+
+    impl MockLlmProvider {
+        fn new(responses: Vec<Value>) -> Self {
+            Self {
+                responses,
+                call_count: AtomicUsize::new(0),
+            }
+        }
+
+        fn get_call_count(&self) -> usize {
+            self.call_count.load(Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl LlmProvider for MockLlmProvider {
+        async fn call_llm(&self, _messages: Vec<Value>, _tools: Vec<Value>, _model: &str) -> Result<Value> {
+            let idx = self.call_count.fetch_add(1, Ordering::SeqCst);
+            if idx < self.responses.len() {
+                Ok(self.responses[idx].clone())
+            } else {
+                // If we run out of responses, return a simple text response
+                Ok(json!({
+                    "choices": [{"message": {"content": "fallback response"}}]
+                }))
+            }
+        }
+    }
+
+    // ---- Mock Plugin ----
+
+    /// A mock plugin that returns a fixed result for any function call.
+    struct MockPlugin {
+        functions: Vec<FunctionDef>,
+    }
+
+    #[async_trait::async_trait]
+    impl Plugin for MockPlugin {
+        async fn execute(&self, _function_name: &str, _params: Value) -> Result<Value> {
+            Ok(json!({"status": "ok"}))
+        }
+
+        fn available_functions(&self) -> Vec<FunctionDef> {
+            self.functions.clone()
+        }
+    }
+
+    fn make_registry() -> PluginRegistry {
+        let mut registry = PluginRegistry::new();
+        registry.register(Box::new(MockPlugin {
+            functions: vec![
+                FunctionDef {
+                    name: "list_entities".to_string(),
+                    description: "List HA entities".to_string(),
+                    parameters: json!({"type": "object", "properties": {}}),
+                },
+                FunctionDef {
+                    name: "turn_off_light".to_string(),
+                    description: "Turn off a light".to_string(),
+                    parameters: json!({"type": "object", "properties": {"entity_id": {"type": "string"}}}),
+                },
+            ],
+        }));
+        registry
+    }
+
+    /// Helper to build an OpenAI-format tool_calls response.
+    fn tool_calls_response(calls: Vec<(&str, &str, &str)>) -> Value {
+        let tool_calls: Vec<Value> = calls
+            .into_iter()
+            .map(|(id, name, args)| {
+                json!({
+                    "id": id,
+                    "type": "function",
+                    "function": {
+                        "name": name,
+                        "arguments": args
+                    }
+                })
+            })
+            .collect();
+
+        json!({
+            "choices": [{
+                "message": {
+                    "content": null,
+                    "tool_calls": tool_calls
+                }
+            }]
+        })
+    }
+
+    /// Helper to build a plain text response.
+    fn text_response(text: &str) -> Value {
+        json!({
+            "choices": [{
+                "message": {
+                    "content": text
+                }
+            }]
+        })
+    }
+
+    // ---- Tests ----
 
     #[test]
     fn test_parse_function_call_response_with_tools() {
-        // **Rust learning note on test JSON construction:**
-        // `json!()` macro creates a serde_json::Value inline.
-        // This is similar to Java's JSONObject or Kotlin's mapOf.
         let response = json!({
             "choices": [{
                 "message": {
@@ -183,6 +336,7 @@ mod tests {
 
         let calls = parse_function_calls(&response).unwrap();
         assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].id, "call_abc123");
         assert_eq!(calls[0].name, "turn_on_light");
         assert_eq!(calls[0].parameters["entity_id"], "light.kitchen");
     }
@@ -193,6 +347,21 @@ mod tests {
             "choices": [{
                 "message": {
                     "content": "No function needed"
+                }
+            }]
+        });
+
+        let calls = parse_function_calls(&response).unwrap();
+        assert_eq!(calls.len(), 0);
+    }
+
+    #[test]
+    fn test_parse_function_call_response_empty_tool_calls_array() {
+        let response = json!({
+            "choices": [{
+                "message": {
+                    "content": "Just text",
+                    "tool_calls": []
                 }
             }]
         });
@@ -216,7 +385,6 @@ mod tests {
 
     #[test]
     fn test_extract_text_response_with_null_content() {
-        // Tool call response has null content
         let response = json!({
             "choices": [{
                 "message": {
@@ -227,5 +395,109 @@ mod tests {
         });
 
         assert_eq!(extract_text_response(&response), "");
+    }
+
+    /// LLM returns tool_calls on the first call, then text on the second.
+    /// Expects exactly 2 LLM calls.
+    #[tokio::test]
+    async fn test_agentic_loop_single_tool_call() {
+        let mock = Arc::new(MockLlmProvider::new(vec![
+            tool_calls_response(vec![("call_1", "list_entities", "{}")]),
+            text_response("Here are your entities."),
+        ]));
+        let provider: Box<dyn LlmProvider> = Box::new(MockLlmProviderWrapper(Arc::clone(&mock)));
+        let orchestrator = Orchestrator::new(provider, make_registry(), "test-model".to_string());
+        let mut state = ConversationState::new(1);
+
+        let result = orchestrator.process_message("list my entities", &mut state).await.unwrap();
+
+        assert_eq!(result, "Here are your entities.");
+        assert_eq!(mock.get_call_count(), 2);
+        // State should have: user + tool result + assistant
+        assert_eq!(state.messages.len(), 3);
+        assert_eq!(state.messages[0].role, "user");
+        assert_eq!(state.messages[1].role, "tool");
+        assert_eq!(state.messages[2].role, "assistant");
+    }
+
+    /// LLM chains two tool calls: list_entities, then turn_off_light, then text.
+    /// Expects exactly 3 LLM calls.
+    #[tokio::test]
+    async fn test_agentic_loop_chained_calls() {
+        let mock = Arc::new(MockLlmProvider::new(vec![
+            tool_calls_response(vec![("call_1", "list_entities", "{}")]),
+            tool_calls_response(vec![("call_2", "turn_off_light", "{\"entity_id\": \"light.kitchen\"}")]),
+            text_response("Done! Kitchen light is off."),
+        ]));
+        let provider: Box<dyn LlmProvider> = Box::new(MockLlmProviderWrapper(Arc::clone(&mock)));
+        let orchestrator = Orchestrator::new(provider, make_registry(), "test-model".to_string());
+        let mut state = ConversationState::new(1);
+
+        let result = orchestrator.process_message("turn off kitchen light", &mut state).await.unwrap();
+
+        assert_eq!(result, "Done! Kitchen light is off.");
+        assert_eq!(mock.get_call_count(), 3);
+        // State: user + tool1 + tool2 + assistant = 4
+        assert_eq!(state.messages.len(), 4);
+    }
+
+    /// LLM always returns tool_calls — should hit MAX_TOOL_ITERATIONS and then
+    /// force a text response on the final call.
+    #[tokio::test]
+    async fn test_agentic_loop_max_iterations() {
+        // 5 tool_call responses (one per iteration) + 1 forced text response
+        let mut responses = Vec::new();
+        for i in 0..MAX_TOOL_ITERATIONS {
+            responses.push(tool_calls_response(vec![
+                (&format!("call_{}", i), "list_entities", "{}"),
+            ]));
+        }
+        responses.push(text_response("Forced final answer."));
+
+        // We need owned strings for the IDs since format! returns String
+        let mock = Arc::new(MockLlmProvider::new(responses));
+        let provider: Box<dyn LlmProvider> = Box::new(MockLlmProviderWrapper(Arc::clone(&mock)));
+        let orchestrator = Orchestrator::new(provider, make_registry(), "test-model".to_string());
+        let mut state = ConversationState::new(1);
+
+        let result = orchestrator.process_message("infinite tools", &mut state).await.unwrap();
+
+        assert_eq!(result, "Forced final answer.");
+        // MAX_TOOL_ITERATIONS loop calls + 1 forced final call
+        assert_eq!(mock.get_call_count(), MAX_TOOL_ITERATIONS + 1);
+    }
+
+    /// LLM returns text directly without any tool calls.
+    /// Expects exactly 1 LLM call.
+    #[tokio::test]
+    async fn test_agentic_loop_no_tools() {
+        let mock = Arc::new(MockLlmProvider::new(vec![
+            text_response("Hello! How can I help?"),
+        ]));
+        let provider: Box<dyn LlmProvider> = Box::new(MockLlmProviderWrapper(Arc::clone(&mock)));
+        let orchestrator = Orchestrator::new(provider, make_registry(), "test-model".to_string());
+        let mut state = ConversationState::new(1);
+
+        let result = orchestrator.process_message("hello", &mut state).await.unwrap();
+
+        assert_eq!(result, "Hello! How can I help?");
+        assert_eq!(mock.get_call_count(), 1);
+        // State: user + assistant = 2
+        assert_eq!(state.messages.len(), 2);
+        assert_eq!(state.messages[0].role, "user");
+        assert_eq!(state.messages[1].role, "assistant");
+    }
+
+    // ---- Wrapper to share Arc<MockLlmProvider> as Box<dyn LlmProvider> ----
+
+    /// Thin wrapper so we can share the mock via Arc while still boxing it
+    /// as `Box<dyn LlmProvider>`. We need Arc to read `call_count` after the test.
+    struct MockLlmProviderWrapper(Arc<MockLlmProvider>);
+
+    #[async_trait::async_trait]
+    impl LlmProvider for MockLlmProviderWrapper {
+        async fn call_llm(&self, messages: Vec<Value>, tools: Vec<Value>, model: &str) -> Result<Value> {
+            self.0.call_llm(messages, tools, model).await
+        }
     }
 }

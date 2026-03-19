@@ -6,6 +6,17 @@ use serde_json::Value;
 use serde::{Deserialize, Serialize};
 use crate::error::Result;
 
+/// Abstraction over the LLM backend (LM Studio, OpenAI, etc.).
+///
+/// **Rust learning note on trait objects:**
+/// This trait is used as `Box<dyn LlmProvider>` — a heap-allocated trait object.
+/// Think of it like a Java interface: `LlmProvider provider = new LMStudioProvider(...)`.
+/// The `Send + Sync` bounds mean it's safe to share across async tasks (threads).
+#[async_trait::async_trait]
+pub trait LlmProvider: Send + Sync {
+    async fn call_llm(&self, messages: Vec<Value>, tools: Vec<Value>, model: &str) -> Result<Value>;
+}
+
 #[async_trait::async_trait]
 pub trait Plugin: Send + Sync {
     async fn execute(&self, function_name: &str, params: Value) -> Result<Value>;

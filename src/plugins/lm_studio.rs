@@ -1,4 +1,5 @@
 use crate::error::{BotError, Result};
+use crate::plugins::LlmProvider;
 use serde_json::{json, Value};
 use reqwest::Client;
 
@@ -19,13 +20,13 @@ impl LMStudioProvider {
             client: Client::new(),
         }
     }
+}
 
-    /// Call LM Studio with messages and optional tools (for function calling).
-    ///
-    /// **Rust learning note:** This `pub async fn` returns a Future under the hood.
-    /// The `.await` suspends execution until the HTTP response arrives.
-    /// Analogous to Java's `CompletableFuture<Value>` or `async` methods in C#.
-    pub async fn call_llm(
+/// Implement the `LlmProvider` trait so the orchestrator can use LMStudioProvider
+/// via `Box<dyn LlmProvider>`. This also makes it easy to swap in a mock for tests.
+#[async_trait::async_trait]
+impl LlmProvider for LMStudioProvider {
+    async fn call_llm(
         &self,
         messages: Vec<Value>,
         tools: Vec<Value>,
