@@ -76,6 +76,8 @@ mod tests {
         let config = Config::from_env().unwrap();
         assert_eq!(config.telegram_token, "test_token");
         assert_eq!(config.lm_studio_url, "http://localhost:1234");
+        assert_eq!(config.llm_model, "qwen2.5-7b-instruct");
+        assert!((config.llm_temperature - 0.3).abs() < 1e-9);
     }
 
     #[test]
