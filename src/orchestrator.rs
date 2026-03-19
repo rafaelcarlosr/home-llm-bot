@@ -70,17 +70,35 @@ impl Orchestrator {
     pub async fn process_message(
         &self,
         user_message: &str,
+        sender_name: Option<&str>,
         state: &mut ConversationState,
     ) -> Result<String> {
-        // Step 1: Add user message to persistent state
-        state.add_message("user", user_message, None);
-
-        // Step 2: Build working messages — system prompt first, then conversation history
+        // Step 1: Build context BEFORE adding user message (to avoid double-counting)
         let system_prompt = build_system_prompt(self.entity_hints.as_deref());
         let context = state.get_context_window(20);
         let mut messages: Vec<Value> = std::iter::once(json!({"role": "system", "content": system_prompt}))
-            .chain(context.iter().map(|m| json!({"role": m.role, "content": m.content})))
+            .chain(context.iter().map(|m| {
+                let content = match &m.sender_name {
+                    Some(name) if m.role == "user" => format!("[{}] {}", name, m.content),
+                    _ => m.content.clone(),
+                };
+                json!({"role": m.role, "content": content})
+            }))
             .collect();
+
+        // Step 2: Persist user message (adds to state.messages AFTER context snapshot)
+        state.add_message_persisted(
+            "user",
+            user_message,
+            sender_name.map(|s| s.to_string()),
+        ).await?;
+
+        // Append current user message to working messages
+        let user_content = match sender_name {
+            Some(name) => format!("[{}] {}", name, user_message),
+            None => user_message.to_string(),
+        };
+        messages.push(json!({"role": "user", "content": user_content}));
 
         // Step 3: Build tools array from registry
         let tools: Vec<Value> = self.registry
@@ -100,7 +118,7 @@ impl Orchestrator {
             if function_calls.is_empty() {
                 // No tool calls — the LLM produced a final text response
                 let response = extract_text_response(&llm_response);
-                state.add_message("assistant", &response, None);
+                state.add_message_persisted("assistant", &response, None).await?;
                 return Ok(response);
             }
 
@@ -145,7 +163,7 @@ impl Orchestrator {
             .call_llm(messages, vec![], &self.model)
             .await?;
         let response = extract_text_response(&final_response);
-        state.add_message("assistant", &response, None);
+        state.add_message_persisted("assistant", &response, None).await?;
         Ok(response)
     }
 }
@@ -436,7 +454,7 @@ mod tests {
         let orchestrator = Orchestrator::new(provider, make_registry(), "test-model".to_string(), None);
         let mut state = ConversationState::new(1);
 
-        let result = orchestrator.process_message("list my entities", &mut state).await.unwrap();
+        let result = orchestrator.process_message("list my entities", None, &mut state).await.unwrap();
 
         assert_eq!(result, "Here are your entities.");
         assert_eq!(mock.get_call_count(), 2);
@@ -460,7 +478,7 @@ mod tests {
         let orchestrator = Orchestrator::new(provider, make_registry(), "test-model".to_string(), None);
         let mut state = ConversationState::new(1);
 
-        let result = orchestrator.process_message("turn off kitchen light", &mut state).await.unwrap();
+        let result = orchestrator.process_message("turn off kitchen light", None, &mut state).await.unwrap();
 
         assert_eq!(result, "Done! Kitchen light is off.");
         assert_eq!(mock.get_call_count(), 3);
@@ -487,7 +505,7 @@ mod tests {
         let orchestrator = Orchestrator::new(provider, make_registry(), "test-model".to_string(), None);
         let mut state = ConversationState::new(1);
 
-        let result = orchestrator.process_message("infinite tools", &mut state).await.unwrap();
+        let result = orchestrator.process_message("infinite tools", None, &mut state).await.unwrap();
 
         assert_eq!(result, "Forced final answer.");
         // MAX_TOOL_ITERATIONS loop calls + 1 forced final call
@@ -505,7 +523,7 @@ mod tests {
         let orchestrator = Orchestrator::new(provider, make_registry(), "test-model".to_string(), None);
         let mut state = ConversationState::new(1);
 
-        let result = orchestrator.process_message("hello", &mut state).await.unwrap();
+        let result = orchestrator.process_message("hello", None, &mut state).await.unwrap();
 
         assert_eq!(result, "Hello! How can I help?");
         assert_eq!(mock.get_call_count(), 1);
@@ -513,6 +531,36 @@ mod tests {
         assert_eq!(state.messages.len(), 2);
         assert_eq!(state.messages[0].role, "user");
         assert_eq!(state.messages[1].role, "assistant");
+    }
+
+    /// Sender name is stored on the user message in state.
+    #[tokio::test]
+    async fn test_sender_name_stored_in_state() {
+        let mock = Arc::new(MockLlmProvider::new(vec![
+            text_response("Hi there."),
+        ]));
+        let provider: Box<dyn LlmProvider> = Box::new(MockLlmProviderWrapper(Arc::clone(&mock)));
+        let orchestrator = Orchestrator::new(provider, make_registry(), "test-model".to_string(), None);
+        let mut state = ConversationState::new(1);
+
+        orchestrator.process_message("hello", Some("Alice"), &mut state).await.unwrap();
+
+        assert_eq!(state.messages[0].sender_name, Some("Alice".to_string()));
+    }
+
+    /// Without a sender name, the message is stored normally.
+    #[tokio::test]
+    async fn test_no_sender_name_is_none() {
+        let mock = Arc::new(MockLlmProvider::new(vec![
+            text_response("Hi."),
+        ]));
+        let provider: Box<dyn LlmProvider> = Box::new(MockLlmProviderWrapper(Arc::clone(&mock)));
+        let orchestrator = Orchestrator::new(provider, make_registry(), "test-model".to_string(), None);
+        let mut state = ConversationState::new(1);
+
+        orchestrator.process_message("hello", None, &mut state).await.unwrap();
+
+        assert_eq!(state.messages[0].sender_name, None);
     }
 
     // ---- Wrapper to share Arc<MockLlmProvider> as Box<dyn LlmProvider> ----

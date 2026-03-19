@@ -133,7 +133,7 @@ async fn handle_text(
 
     let response = {
         let mut guard = state.lock().await;
-        orch.process_message(text, &mut guard).await
+        orch.process_message(text, Some(sender), &mut guard).await
     }; // <- MutexGuard drops here, lock released
 
     match response {
