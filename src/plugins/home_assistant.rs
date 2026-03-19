@@ -41,26 +41,31 @@ impl Plugin for HomeAssistantPlugin {
     /// This is type-safe dispatch — impossible to forget a case.
     async fn execute(&self, function_name: &str, params: Value) -> Result<Value> {
         match function_name {
-            "turn_on_light" => {
+            "turn_on_device" => {
                 let entity_id = params["entity_id"]
                     .as_str()
                     .ok_or_else(|| BotError::HomeAssistant("Missing entity_id".into()))?;
 
+                // Detect domain from entity_id prefix (e.g. "switch.cave" → "switch")
+                let domain = entity_id.split('.').next().unwrap_or("homeassistant");
                 let mut body = json!({"entity_id": entity_id});
 
-                // Optional brightness parameter
-                if let Some(pct) = params["brightness_pct"].as_f64() {
-                    body["brightness_pct"] = json!(pct as i32);
+                // Brightness only makes sense for lights
+                if domain == "light" {
+                    if let Some(pct) = params["brightness_pct"].as_f64() {
+                        body["brightness_pct"] = json!(pct as i32);
+                    }
                 }
 
-                self.call_service("light", "turn_on", body).await
+                self.call_service(domain, "turn_on", body).await
             }
-            "turn_off_light" => {
+            "turn_off_device" => {
                 let entity_id = params["entity_id"]
                     .as_str()
                     .ok_or_else(|| BotError::HomeAssistant("Missing entity_id".into()))?;
 
-                self.call_service("light", "turn_off", json!({"entity_id": entity_id}))
+                let domain = entity_id.split('.').next().unwrap_or("homeassistant");
+                self.call_service(domain, "turn_off", json!({"entity_id": entity_id}))
                     .await
             }
             "get_entity_state" => {
@@ -86,7 +91,30 @@ impl Plugin for HomeAssistantPlugin {
                 )
                 .await
             }
-            "list_entities" => self.list_entities().await,
+            "search_entities" => {
+                let domain = params["domain"].as_str();
+                let query = params["query"].as_str();
+                self.search_entities(domain, query).await
+            }
+            "call_service" => {
+                let domain = params["domain"]
+                    .as_str()
+                    .ok_or_else(|| BotError::HomeAssistant("Missing domain".into()))?;
+                let service = params["service"]
+                    .as_str()
+                    .ok_or_else(|| BotError::HomeAssistant("Missing service".into()))?;
+                let entity_id = params["entity_id"]
+                    .as_str()
+                    .ok_or_else(|| BotError::HomeAssistant("Missing entity_id".into()))?;
+                let mut body = json!({"entity_id": entity_id});
+                // Forward any extra data fields
+                if let Some(data) = params["data"].as_object() {
+                    for (k, v) in data {
+                        body[k] = v.clone();
+                    }
+                }
+                self.call_service(domain, service, body).await
+            }
             _ => Err(BotError::HomeAssistant(format!(
                 "Unknown function: {}",
                 function_name
@@ -97,32 +125,32 @@ impl Plugin for HomeAssistantPlugin {
     fn available_functions(&self) -> Vec<FunctionDef> {
         vec![
             FunctionDef {
-                name: "turn_on_light".to_string(),
-                description: "Turn on a light or switch by entity ID".to_string(),
+                name: "turn_on_device".to_string(),
+                description: "Turn on any Home Assistant device (light, switch, scene, script, fan, etc.) by entity ID. The domain is inferred from the entity_id prefix.".to_string(),
                 parameters: json!({
                     "type": "object",
                     "properties": {
                         "entity_id": {
                             "type": "string",
-                            "description": "Home Assistant entity ID, e.g. light.kitchen"
+                            "description": "Home Assistant entity ID, e.g. light.kitchen, switch.sonoff_abc, scene.ligar_cave"
                         },
                         "brightness_pct": {
                             "type": "number",
-                            "description": "Brightness percentage 0-100 (optional)"
+                            "description": "Brightness percentage 0-100, only for light entities (optional)"
                         }
                     },
                     "required": ["entity_id"]
                 }),
             },
             FunctionDef {
-                name: "turn_off_light".to_string(),
-                description: "Turn off a light or switch by entity ID".to_string(),
+                name: "turn_off_device".to_string(),
+                description: "Turn off any Home Assistant device (light, switch, fan, etc.) by entity ID. The domain is inferred from the entity_id prefix.".to_string(),
                 parameters: json!({
                     "type": "object",
                     "properties": {
                         "entity_id": {
                             "type": "string",
-                            "description": "Home Assistant entity ID"
+                            "description": "Home Assistant entity ID, e.g. switch.sonoff_abc, light.bedroom"
                         }
                     },
                     "required": ["entity_id"]
@@ -161,9 +189,48 @@ impl Plugin for HomeAssistantPlugin {
                 }),
             },
             FunctionDef {
-                name: "list_entities".to_string(),
-                description: "List all Home Assistant entities and their current states".to_string(),
-                parameters: json!({"type": "object", "properties": {}}),
+                name: "search_entities".to_string(),
+                description: "Search Home Assistant entities by domain and/or name. Use this when you need to find an entity ID. Returns a compact list (max 20) with entity_id, state, and friendly_name.".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "domain": {
+                            "type": "string",
+                            "description": "Filter by domain, e.g. 'light', 'switch', 'climate', 'scene', 'script'"
+                        },
+                        "query": {
+                            "type": "string",
+                            "description": "Substring to match against entity_id or friendly_name"
+                        }
+                    },
+                    "required": []
+                }),
+            },
+            FunctionDef {
+                name: "call_service".to_string(),
+                description: "Call any Home Assistant service. Use for actions not covered by other tools (e.g. activating scenes, running scripts, or toggling devices).".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "domain": {
+                            "type": "string",
+                            "description": "Service domain, e.g. 'scene', 'script', 'light', 'switch'"
+                        },
+                        "service": {
+                            "type": "string",
+                            "description": "Service name, e.g. 'turn_on', 'turn_off', 'toggle'"
+                        },
+                        "entity_id": {
+                            "type": "string",
+                            "description": "Target entity ID"
+                        },
+                        "data": {
+                            "type": "object",
+                            "description": "Additional service data (optional)"
+                        }
+                    },
+                    "required": ["domain", "service", "entity_id"]
+                }),
             },
         ]
     }
@@ -185,7 +252,7 @@ impl HomeAssistantPlugin {
         check_status(response).await
     }
 
-    /// Get the state of an entity.
+    /// Get the state of an entity, returning only essential fields.
     async fn get_state(&self, entity_id: &str) -> Result<Value> {
         let url = format!("{}/api/states/{}", self.url, entity_id);
 
@@ -195,11 +262,31 @@ impl HomeAssistantPlugin {
             .send()
             .await?;
 
-        check_status(response).await
+        let full = check_status(response).await?;
+        let attrs = &full["attributes"];
+
+        // Return compact representation — only fields useful for the LLM
+        let mut result = json!({
+            "entity_id": full["entity_id"],
+            "state": full["state"],
+            "friendly_name": attrs["friendly_name"],
+            "last_changed": full["last_changed"],
+        });
+
+        // Include domain-specific key attributes
+        for key in &["brightness", "color_temp", "temperature", "current_temperature",
+                     "humidity", "unit_of_measurement", "device_class"] {
+            if !attrs[key].is_null() {
+                result[key] = attrs[key].clone();
+            }
+        }
+
+        Ok(result)
     }
 
-    /// List all entities and their states.
-    async fn list_entities(&self) -> Result<Value> {
+    /// Search entities by optional domain prefix and/or substring query.
+    /// Returns a compact list (max 20) with only entity_id, state, friendly_name.
+    async fn search_entities(&self, domain: Option<&str>, query: Option<&str>) -> Result<Value> {
         let url = format!("{}/api/states", self.url);
 
         let response = self.client
@@ -208,7 +295,41 @@ impl HomeAssistantPlugin {
             .send()
             .await?;
 
-        check_status(response).await
+        let all: Vec<Value> = check_status(response).await?
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+
+        let results: Vec<Value> = all
+            .into_iter()
+            .filter(|e| {
+                let entity_id = e["entity_id"].as_str().unwrap_or("");
+                let friendly = e["attributes"]["friendly_name"].as_str().unwrap_or("").to_lowercase();
+
+                // Domain filter
+                if let Some(d) = domain {
+                    if !entity_id.starts_with(&format!("{}.", d)) {
+                        return false;
+                    }
+                }
+                // Query filter
+                if let Some(q) = query {
+                    let q_lower = q.to_lowercase();
+                    if !entity_id.to_lowercase().contains(&q_lower) && !friendly.contains(&q_lower) {
+                        return false;
+                    }
+                }
+                true
+            })
+            .take(20)
+            .map(|e| json!({
+                "entity_id": e["entity_id"],
+                "state": e["state"],
+                "friendly_name": e["attributes"]["friendly_name"]
+            }))
+            .collect();
+
+        Ok(json!(results))
     }
 }
 
@@ -231,9 +352,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_available_functions_returns_five() {
+    fn test_available_functions_returns_six() {
         let plugin = HomeAssistantPlugin::new("http://localhost:8123".into(), "token".into());
-        assert_eq!(plugin.available_functions().len(), 5);
+        assert_eq!(plugin.available_functions().len(), 6);
+    }
+
+    #[test]
+    fn test_function_names() {
+        let plugin = HomeAssistantPlugin::new("http://localhost:8123".into(), "token".into());
+        let names: Vec<_> = plugin.available_functions().into_iter().map(|f| f.name).collect();
+        assert!(names.contains(&"turn_on_device".to_string()));
+        assert!(names.contains(&"turn_off_device".to_string()));
+        assert!(names.contains(&"search_entities".to_string()));
+        assert!(names.contains(&"call_service".to_string()));
     }
 
     #[test]

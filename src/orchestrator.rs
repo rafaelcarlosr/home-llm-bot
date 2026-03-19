@@ -31,6 +31,9 @@ pub struct Orchestrator {
     provider: Box<dyn LlmProvider>,
     registry: PluginRegistry,
     model: String,
+    /// Optional hints about known entities in this home, injected into the system prompt.
+    /// Set via ENTITY_HINTS env var, e.g. "switch.sonoff_abc=Cave light,light.kitchen=Kitchen"
+    entity_hints: Option<String>,
 }
 
 impl Orchestrator {
@@ -38,11 +41,13 @@ impl Orchestrator {
         provider: Box<dyn LlmProvider>,
         registry: PluginRegistry,
         model: String,
+        entity_hints: Option<String>,
     ) -> Self {
         Self {
             provider,
             registry,
             model,
+            entity_hints,
         }
     }
 
@@ -70,11 +75,11 @@ impl Orchestrator {
         // Step 1: Add user message to persistent state
         state.add_message("user", user_message, None);
 
-        // Step 2: Build working messages from context window
+        // Step 2: Build working messages — system prompt first, then conversation history
+        let system_prompt = build_system_prompt(self.entity_hints.as_deref());
         let context = state.get_context_window(20);
-        let mut messages: Vec<Value> = context
-            .iter()
-            .map(|m| json!({"role": m.role, "content": m.content}))
+        let mut messages: Vec<Value> = std::iter::once(json!({"role": "system", "content": system_prompt}))
+            .chain(context.iter().map(|m| json!({"role": m.role, "content": m.content})))
             .collect();
 
         // Step 3: Build tools array from registry
@@ -143,6 +148,29 @@ impl Orchestrator {
         state.add_message("assistant", &response, None);
         Ok(response)
     }
+}
+
+/// Build the system prompt that guides the LLM on tool usage and home entity conventions.
+fn build_system_prompt(entity_hints: Option<&str>) -> String {
+    let mut prompt = String::from(
+        "You are a home automation assistant for a family. \
+        You control devices via Home Assistant. \
+        \n\nIMPORTANT RULES:\
+        \n- Always respond in the same language the user is speaking (Portuguese, English, etc.).\
+        \n- Home Assistant entity IDs follow the pattern domain.name, e.g. light.kitchen, switch.office, scene.night_mode.\
+        \n- For lights use 'light.*', for switches use 'switch.*', for scenes use 'scene.*', for scripts use 'script.*'.\
+        \n- ALWAYS try to call turn_on_device or turn_off_device directly with the entity_id you infer from the user's request. \
+        Do NOT call search_entities first unless you truly cannot guess the entity_id.\
+        \n- If an action fails because the entity_id was wrong, then call search_entities to find the correct one.\
+        \n- Keep responses short and conversational.",
+    );
+
+    if let Some(hints) = entity_hints {
+        prompt.push_str("\n\nKnown entities in this home:\n");
+        prompt.push_str(hints);
+    }
+
+    prompt
 }
 
 /// Parse LM Studio's function call response in OpenAI format.
@@ -406,7 +434,7 @@ mod tests {
             text_response("Here are your entities."),
         ]));
         let provider: Box<dyn LlmProvider> = Box::new(MockLlmProviderWrapper(Arc::clone(&mock)));
-        let orchestrator = Orchestrator::new(provider, make_registry(), "test-model".to_string());
+        let orchestrator = Orchestrator::new(provider, make_registry(), "test-model".to_string(), None);
         let mut state = ConversationState::new(1);
 
         let result = orchestrator.process_message("list my entities", &mut state).await.unwrap();
@@ -430,7 +458,7 @@ mod tests {
             text_response("Done! Kitchen light is off."),
         ]));
         let provider: Box<dyn LlmProvider> = Box::new(MockLlmProviderWrapper(Arc::clone(&mock)));
-        let orchestrator = Orchestrator::new(provider, make_registry(), "test-model".to_string());
+        let orchestrator = Orchestrator::new(provider, make_registry(), "test-model".to_string(), None);
         let mut state = ConversationState::new(1);
 
         let result = orchestrator.process_message("turn off kitchen light", &mut state).await.unwrap();
@@ -457,7 +485,7 @@ mod tests {
         // We need owned strings for the IDs since format! returns String
         let mock = Arc::new(MockLlmProvider::new(responses));
         let provider: Box<dyn LlmProvider> = Box::new(MockLlmProviderWrapper(Arc::clone(&mock)));
-        let orchestrator = Orchestrator::new(provider, make_registry(), "test-model".to_string());
+        let orchestrator = Orchestrator::new(provider, make_registry(), "test-model".to_string(), None);
         let mut state = ConversationState::new(1);
 
         let result = orchestrator.process_message("infinite tools", &mut state).await.unwrap();
@@ -475,7 +503,7 @@ mod tests {
             text_response("Hello! How can I help?"),
         ]));
         let provider: Box<dyn LlmProvider> = Box::new(MockLlmProviderWrapper(Arc::clone(&mock)));
-        let orchestrator = Orchestrator::new(provider, make_registry(), "test-model".to_string());
+        let orchestrator = Orchestrator::new(provider, make_registry(), "test-model".to_string(), None);
         let mut state = ConversationState::new(1);
 
         let result = orchestrator.process_message("hello", &mut state).await.unwrap();

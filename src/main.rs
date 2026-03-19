@@ -55,9 +55,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let model = std::env::var("LLM_MODEL")
         .unwrap_or_else(|_| "qwen2.5-7b-instruct".to_string());
 
+    // Optional entity hints for the system prompt, e.g.:
+    // ENTITY_HINTS="switch.sonoff_1000ab571c=Luz Cave (porão externo)\nscene.ligar_cave=Ligar Cave"
+    let entity_hints = std::env::var("ENTITY_HINTS").ok();
+
     // Build the orchestrator (owns the LLM provider and plugin registry)
     let lm_provider = LMStudioProvider::new(config.lm_studio_url.clone());
-    let orchestrator = Arc::new(Orchestrator::new(Box::new(lm_provider), registry, model));
+    let orchestrator = Arc::new(Orchestrator::new(Box::new(lm_provider), registry, model, entity_hints));
 
     // Build the Whisper STT provider
     let whisper = Arc::new(WhisperProvider::new(config.whisper_url.clone()));
