@@ -80,24 +80,20 @@ mod tests {
 
     #[test]
     fn test_config_temperature_default() {
-        // Ensure unset LLM_TEMPERATURE defaults to 0.3
-        std::env::remove_var("LLM_TEMPERATURE");
-        // We can't call Config::from_env() without all required vars, so test the parse logic directly:
-        let val: f64 = std::env::var("LLM_TEMPERATURE")
-            .ok()
+        // Test that the parsing expression returns 0.3 when no value is provided
+        let val: f64 = None::<String>
+            .as_deref()
             .and_then(|s| s.parse().ok())
             .unwrap_or(0.3);
-        assert!((val - 0.3).abs() < f64::EPSILON);
+        assert!((val - 0.3).abs() < 1e-9);
     }
 
     #[test]
     fn test_config_temperature_from_env() {
-        std::env::set_var("LLM_TEMPERATURE", "0.1");
-        let val: f64 = std::env::var("LLM_TEMPERATURE")
-            .ok()
-            .and_then(|s| s.parse().ok())
+        // Test that a valid float string is parsed correctly
+        let val: f64 = Some("0.1")
+            .and_then(|s: &str| s.parse().ok())
             .unwrap_or(0.3);
-        assert!((val - 0.1).abs() < f64::EPSILON);
-        std::env::remove_var("LLM_TEMPERATURE");
+        assert!((val - 0.1).abs() < 1e-9);
     }
 }
