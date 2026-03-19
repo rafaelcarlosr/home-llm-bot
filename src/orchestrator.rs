@@ -54,16 +54,17 @@ impl Orchestrator {
     /// Process a user message using an agentic loop that supports chained tool calls.
     ///
     /// **Flow:**
-    /// 1. Add user message to persistent state
-    /// 2. Build a working `messages` vec (OpenAI format) from the context window
-    /// 3. Build the tools array from the plugin registry
-    /// 4. **Loop** (up to `MAX_TOOL_ITERATIONS`):
+    /// 1. Snapshot conversation history into a working `messages` vec (system prompt first)
+    /// 2. Persist the user message to state (AFTER the snapshot — avoids double-counting)
+    /// 3. Append the current user message (with sender prefix if present) to working messages
+    /// 4. Build the tools array from the plugin registry
+    /// 5. **Loop** (up to `MAX_TOOL_ITERATIONS`):
     ///    a. Call the LLM with messages + tools
     ///    b. If the LLM returns `tool_calls`: push the assistant message (with tool_calls)
     ///       into the working vec, execute each tool, push tool-role results with matching
     ///       `tool_call_id` -> continue loop
     ///    c. If no `tool_calls`: extract text, persist to state, return
-    /// 5. If the loop is exhausted: make one final call with empty tools to force a text reply
+    /// 6. If the loop is exhausted: make one final call with empty tools to force a text reply
     ///
     /// **Why a working vec?** During the loop we accumulate assistant+tool messages that
     /// the LLM needs to see on the next iteration. We also persist them to state for history.
@@ -256,6 +257,7 @@ mod tests {
     struct MockLlmProvider {
         responses: Vec<Value>,
         call_count: AtomicUsize,
+        last_messages: std::sync::Mutex<Vec<Value>>,
     }
 
     impl MockLlmProvider {
@@ -263,18 +265,24 @@ mod tests {
             Self {
                 responses,
                 call_count: AtomicUsize::new(0),
+                last_messages: std::sync::Mutex::new(Vec::new()),
             }
         }
 
         fn get_call_count(&self) -> usize {
             self.call_count.load(Ordering::SeqCst)
         }
+
+        fn get_last_messages(&self) -> Vec<Value> {
+            self.last_messages.lock().unwrap().clone()
+        }
     }
 
     #[async_trait::async_trait]
     impl LlmProvider for MockLlmProvider {
-        async fn call_llm(&self, _messages: Vec<Value>, _tools: Vec<Value>, _model: &str) -> Result<Value> {
+        async fn call_llm(&self, messages: Vec<Value>, _tools: Vec<Value>, _model: &str) -> Result<Value> {
             let idx = self.call_count.fetch_add(1, Ordering::SeqCst);
+            *self.last_messages.lock().unwrap() = messages.clone();
             if idx < self.responses.len() {
                 Ok(self.responses[idx].clone())
             } else {
@@ -561,6 +569,26 @@ mod tests {
         orchestrator.process_message("hello", None, &mut state).await.unwrap();
 
         assert_eq!(state.messages[0].sender_name, None);
+    }
+
+    /// LLM working messages include the [Name] prefix for the sender.
+    #[tokio::test]
+    async fn test_sender_name_prefixed_in_llm_messages() {
+        let mock = Arc::new(MockLlmProvider::new(vec![
+            text_response("Hi there."),
+        ]));
+        let provider: Box<dyn LlmProvider> = Box::new(MockLlmProviderWrapper(Arc::clone(&mock)));
+        let orchestrator = Orchestrator::new(provider, make_registry(), "test-model".to_string(), None);
+        let mut state = ConversationState::new(1);
+
+        orchestrator.process_message("hello", Some("Alice"), &mut state).await.unwrap();
+
+        let messages = mock.get_last_messages();
+        // messages[0] = system prompt, messages[1] = user message with prefix
+        let user_msg = messages.iter()
+            .find(|m| m["role"] == "user")
+            .expect("should have a user message");
+        assert_eq!(user_msg["content"], "[Alice] hello");
     }
 
     // ---- Wrapper to share Arc<MockLlmProvider> as Box<dyn LlmProvider> ----
