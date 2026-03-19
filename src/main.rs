@@ -4,7 +4,7 @@ use home_llm_bot::{
     orchestrator::Orchestrator,
     plugins::{
         PluginRegistry,
-        home_assistant::HomeAssistantPlugin,
+        mcp::McpPlugin,
         lm_studio::LMStudioProvider,
         whisper::WhisperProvider,
     },
@@ -39,17 +39,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let pool = init_db(&config.database_url).await?;
     tracing::info!("Database initialized");
 
-    // Build plugin registry with all available integrations
-    // **Rust learning note on `Box<dyn Plugin>`:**
-    // `Box<dyn Plugin>` is a heap-allocated trait object — similar to Java's
-    // interface reference `Plugin plugin = new HomeAssistantPlugin(...)`.
-    // `Box` gives us heap allocation; `dyn` means dynamic dispatch at runtime.
+    // Build plugin registry using the HA MCP server.
+    // McpPlugin::init() fetches the tool list from HA at startup — no hardcoded tools.
+    // **Rust learning note on async constructors:**
+    // Rust `new()` is synchronous by convention. We use an async `init()` factory
+    // when initialisation requires I/O (here: fetching tools from Home Assistant).
     let mut registry = PluginRegistry::new();
-    registry.register(Box::new(HomeAssistantPlugin::new(
+    let mcp = McpPlugin::init(
         config.home_assistant_url.clone(),
         config.home_assistant_token.clone(),
-    )));
-    tracing::info!("Registered {} functions", registry.get_all_functions().len());
+    )
+    .await?;
+    registry.register(Box::new(mcp));
+    tracing::info!("Registered {} MCP functions from Home Assistant", registry.get_all_functions().len());
 
     // LLM model name — defaults to a sensible local model if not set
     let model = std::env::var("LLM_MODEL")

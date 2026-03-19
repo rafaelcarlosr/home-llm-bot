@@ -1,5 +1,6 @@
 pub mod home_assistant;
 pub mod lm_studio;
+pub mod mcp;
 pub mod whisper;
 
 use serde_json::Value;
