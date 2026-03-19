@@ -117,8 +117,15 @@ impl Plugin for McpPlugin {
             .and_then(|arr| arr.first())
             .and_then(|item| item["text"].as_str())
         {
+            // For GetLiveContext, filter the large result to only useful entries
+            let processed = if function_name == "GetLiveContext" {
+                filter_live_context(text)
+            } else {
+                text.to_string()
+            };
             // Try to parse as JSON; if it's plain text, wrap it
-            return Ok(serde_json::from_str(text).unwrap_or_else(|_| json!({ "result": text })));
+            return Ok(serde_json::from_str(&processed)
+                .unwrap_or_else(|_| json!({ "result": processed })));
         }
 
         Ok(json!({ "result": "ok" }))
@@ -127,6 +134,79 @@ impl Plugin for McpPlugin {
     fn available_functions(&self) -> Vec<FunctionDef> {
         self.tools.clone()
     }
+}
+
+/// Filter the GetLiveContext YAML to remove noise before sending to the LLM.
+///
+/// HA's GetLiveContext returns ~10KB with 90+ entries (AdGuard switches, Solarman
+/// sensors, unavailable devices, etc.). This drops irrelevant entries so the LLM
+/// can answer "is the AC on?" without getting lost in a wall of unrelated data.
+///
+/// The input text from MCP is `{"success": true, "result": "Live Context: ...YAML..."}`.
+/// We extract the YAML, filter it, and rewrap it.
+fn filter_live_context(raw: &str) -> String {
+    const SKIP_NAMES: &[&str] = &[
+        "adguard", "disjuntor", "solarman", "xiaomi", "pm10", "pm2.5",
+        "smartthinq", "icloud", "truenas", "plex",
+    ];
+
+    // The MCP text content is JSON: {"success": true, "result": "Live Context: ...\n- names:..."}
+    // Extract the inner YAML from the "result" field
+    let yaml = if let Ok(v) = serde_json::from_str::<serde_json::Value>(raw) {
+        v["result"].as_str().unwrap_or(raw).to_string()
+    } else {
+        raw.to_string()
+    };
+
+    // Split into header + per-device blocks (each block starts with "- names:")
+    let mut header_lines: Vec<&str> = Vec::new();
+    let mut blocks: Vec<String> = Vec::new();
+    let mut current: Vec<&str> = Vec::new();
+    let mut in_blocks = false;
+
+    for line in yaml.lines() {
+        if line.trim_start().starts_with("- names:") {
+            if !current.is_empty() {
+                blocks.push(current.join("\n"));
+                current.clear();
+            }
+            in_blocks = true;
+        }
+        if in_blocks {
+            current.push(line);
+        } else {
+            header_lines.push(line);
+        }
+    }
+    if !current.is_empty() {
+        blocks.push(current.join("\n"));
+    }
+
+    let filtered: Vec<String> = blocks
+        .into_iter()
+        .filter(|block| {
+            let lower = block.to_lowercase();
+            // Drop unavailable / unknown state
+            if lower.contains("state: 'unavailable'") || lower.contains("state: unavailable")
+                || lower.contains("state: 'unknown'") || lower.contains("state: unknown")
+            {
+                return false;
+            }
+            // Drop noisy infrastructure devices by name keyword
+            if SKIP_NAMES.iter().any(|skip| lower.contains(skip)) {
+                return false;
+            }
+            true
+        })
+        .collect();
+
+    let filtered_yaml = format!("{}\n{}", header_lines.join("\n"), filtered.join("\n"));
+    // Return as the same JSON shape HA sends: {"success": true, "result": "..."}
+    serde_json::to_string(&serde_json::json!({
+        "success": true,
+        "result": filtered_yaml
+    }))
+    .unwrap_or(filtered_yaml)
 }
 
 #[cfg(test)]
